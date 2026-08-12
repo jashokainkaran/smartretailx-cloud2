@@ -1,0 +1,28 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Environment / secrets
+.env
+*.env
+
+# Node / frontend
+node_modules/
+dist/
+
+# Terraform (when we add it) — state can contain secrets, never commit it
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# OS / editor junk
+.DS_Store
+.idea/
+.vscode/
+
+# Internal planning docs (excluded by choice)
+docs/architecture/ARCHITECTURE_DECISIONS.md
+docs/PROJECT_BRIEF.md
