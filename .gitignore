@@ -12,11 +12,16 @@ __pycache__/
 node_modules/
 dist/
 
-# Terraform (when we add it) — state can contain secrets, never commit it
+# Terraform — state contains resource attributes in plaintext, never commit
 .terraform/
+.terraform.lock.hcl
 *.tfstate
-*.tfstate.backup
+*.tfstate.*
+
+# tfvars may contain sensitive values; allow the safe ones explicitly
 *.tfvars
+!dev.tfvars
+!example.tfvars
 
 # OS / editor junk
 .DS_Store

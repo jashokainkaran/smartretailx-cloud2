@@ -1,0 +1,9 @@
+# Terraform state — contains resource IDs and can contain secrets. NEVER commit.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Variable files may contain sensitive values
+*.tfvars
+!example.tfvars
