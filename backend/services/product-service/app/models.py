@@ -1,12 +1,12 @@
-from pydantic import BaseModel
+from decimal import Decimal
+from pydantic import BaseModel, Field
 from typing import Optional
 
 
-# Fields shared by every product.
 class ProductBase(BaseModel):
     name: str
     description: str
-    price: float
+    price: Decimal = Field(..., gt=0, decimal_places=2)
     category: str
     image_url: Optional[str] = None
 

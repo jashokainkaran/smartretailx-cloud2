@@ -63,7 +63,7 @@ def test_create_product():
     assert response.status_code == 201
     body = response.json()
     assert body["name"] == "Test Widget"
-    assert body["price"] == 19.99
+    assert body["price"] == "19.99"
     assert "id" in body           # server generated an id
     assert len(body["id"]) > 0
 
