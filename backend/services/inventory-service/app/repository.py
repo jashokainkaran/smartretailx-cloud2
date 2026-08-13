@@ -15,13 +15,22 @@ def _floats_to_decimal(obj):
     return obj
 
 
-dynamodb = boto3.resource(
-    "dynamodb",
-    endpoint_url=config.DYNAMODB_ENDPOINT,
-    region_name=config.AWS_REGION,
-    aws_access_key_id="local",       # dummy values — DynamoDB Local ignores them
-    aws_secret_access_key="local",   # in the cloud, real credentials are used instead
-)
+# Shared connection kwargs for the resource, so credentials and endpoint
+# cannot drift from what's actually intended per environment.
+#
+# Locally, DYNAMODB_ENDPOINT points at DynamoDB Local, which needs dummy
+# credentials since it doesn't check them. On AWS, DYNAMODB_ENDPOINT is
+# unset — we pass region only, so boto3 resolves the real DynamoDB
+# endpoint and the Lambda execution role's temporary credentials.
+_dynamodb_kwargs = {"region_name": config.AWS_REGION}
+if config.DYNAMODB_ENDPOINT:
+    _dynamodb_kwargs.update({
+        "endpoint_url": config.DYNAMODB_ENDPOINT,
+        "aws_access_key_id": "local",
+        "aws_secret_access_key": "local",
+    })
+
+dynamodb = boto3.resource("dynamodb", **_dynamodb_kwargs)
 
 table = dynamodb.Table(config.INVENTORY_TABLE)
 

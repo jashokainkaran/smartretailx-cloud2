@@ -7,7 +7,7 @@ CORS_ORIGINS = os.environ.get(
 
 # Where DynamoDB lives. Locally this points at DynamoDB Local.
 # In AWS we leave DYNAMODB_ENDPOINT unset, and boto3 finds real DynamoDB automatically.
-DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT", "http://localhost:8000")
+DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
 # Which AWS region. Ireland, per our decision.
 AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")

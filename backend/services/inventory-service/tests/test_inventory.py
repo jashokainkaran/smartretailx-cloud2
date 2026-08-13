@@ -2,6 +2,7 @@ import os
 
 # Point the app at a SEPARATE test table BEFORE importing it.
 os.environ["INVENTORY_TABLE"] = "InventoryTest"
+os.environ["DYNAMODB_ENDPOINT"] = "http://localhost:8000"
 
 import boto3
 import pytest

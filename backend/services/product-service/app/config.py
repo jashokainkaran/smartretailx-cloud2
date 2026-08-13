@@ -7,10 +7,17 @@ CORS_ORIGINS = os.environ.get(
 
 # Where DynamoDB lives. Locally this points at DynamoDB Local.
 # In AWS we leave DYNAMODB_ENDPOINT unset, and boto3 finds real DynamoDB automatically.
-DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT", "http://localhost:8000")
+DYNAMODB_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
 # Which AWS region. Ireland, per our decision.
 AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
 
 # The name of our table.
 PRODUCTS_TABLE = os.environ.get("PRODUCTS_TABLE", "Products")
+
+# The EventBridge bus we publish domain events to.
+# Unset locally means events are skipped (tests run without AWS).
+EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME")
+
+# The outbox table for reliable event publication (ADR-020).
+OUTBOX_TABLE = os.environ.get("OUTBOX_TABLE", "ProductOutbox")

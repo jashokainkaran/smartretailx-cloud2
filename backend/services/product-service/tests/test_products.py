@@ -3,6 +3,8 @@ import os
 # Point the app at a SEPARATE test table BEFORE importing it.
 # This must happen before "from app.main import app" so config picks it up.
 os.environ["PRODUCTS_TABLE"] = "ProductsTest"
+os.environ["OUTBOX_TABLE"] = "ProductOutboxTest"
+os.environ["DYNAMODB_ENDPOINT"] = "http://localhost:8000"
 
 import boto3
 import pytest
@@ -36,11 +38,23 @@ def test_table():
     )
     table.wait_until_exists()
 
+    # Create the throwaway outbox table.
+    outbox_table = dynamodb.create_table(
+        TableName="ProductOutboxTest",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    outbox_table.wait_until_exists()
+
     yield   # <-- the test runs at this point
 
-    # Cleanup: delete the table so the next test starts clean.
+    # Cleanup: delete the tables so the next test starts clean.
     table.delete()
     table.wait_until_not_exists()
+
+    outbox_table.delete()
+    outbox_table.wait_until_not_exists()
 
 
 # ---- The actual tests ----

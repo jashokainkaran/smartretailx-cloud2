@@ -1,18 +1,14 @@
-# Start from a slim, official Python image matching our version.
-FROM python:3.11-slim
+# AWS's Lambda base image for Python 3.11. It includes the Lambda Runtime
+# Interface Client, which is how AWS invokes our handler.
+FROM public.ecr.aws/lambda/python:3.11
 
-# Where our app lives inside the container.
-WORKDIR /app
-
-# Copy ONLY requirements first, then install — this is a caching optimisation.
+# Copy ONLY requirements first, then install — Docker caches this layer, so
+# code changes don't trigger a reinstall of every dependency.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Now copy the application code.
-COPY app/ ./app/
+# LAMBDA_TASK_ROOT is /var/task — the directory Lambda loads code from.
+COPY app/ ${LAMBDA_TASK_ROOT}/app/
 
-# Document that the service listens on 8080.
-EXPOSE 8080
-
-# The command that starts the service when the container runs.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# The handler Lambda calls: module path, then function name.
+CMD ["app.main.handler"]

@@ -4,7 +4,12 @@ from app.models import ProductCreate, Product, ProductPage
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
+import logging
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
 app = FastAPI(
     title="SmartRetailX - Product Catalogue Service",
     version="1.0.0",
@@ -59,3 +64,5 @@ def list_products(
     """
     items, next_cursor = repository.list_products(limit=limit, cursor=cursor)
     return {"items": items, "next_cursor": next_cursor}
+
+handler = Mangum(app)
