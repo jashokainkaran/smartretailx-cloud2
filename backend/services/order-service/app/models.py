@@ -1,6 +1,22 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
+
+
+def _two_places(value: Decimal) -> str:
+    """
+    Serialise a monetary amount with exactly two decimal places.
+
+    DynamoDB discards trailing zeros, so a total stored as 20.50 reads back
+    as 20.5 and would go over the wire as "20.5". quantize only pads —
+    30.89 stays 30.89 — so this stabilises the format without touching the
+    value. ROUND_HALF_UP is unreachable given decimal_places=2 validation,
+    but is stated rather than inheriting Python's banker's rounding.
+
+    Amounts are US dollars (USD); two decimal places is correct for cents
+    and is assumed system-wide (see ADR-039).
+    """
+    return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 class OrderItemRequest(BaseModel):
@@ -59,6 +75,10 @@ class OrderLineItem(BaseModel):
     unit_price: Decimal
     name: str
 
+    @field_serializer("unit_price")
+    def _serialise_unit_price(self, value: Decimal) -> str:
+        return _two_places(value)
+
 
 class Order(BaseModel):
     order_id: str
@@ -68,6 +88,10 @@ class Order(BaseModel):
     # Computed server-side from the snapshotted line items, never sent by
     # the client, for the same reason unit_price isn't.
     total: Decimal
+
+    @field_serializer("total")
+    def _serialise_total(self, value: Decimal) -> str:
+        return _two_places(value)
 
     # One of the values in app/states.py.
     status: str

@@ -3,11 +3,7 @@ import { fetchProductById } from "../api/products.js";
 import ImagePlaceholder from "./ImagePlaceholder.jsx";
 import LoadingState from "./LoadingState.jsx";
 import ErrorState from "./ErrorState.jsx";
-
-const priceFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
+import { formatPrice } from "../lib/currency.js";
 
 export default function ProductDetail({ productId, onBack }) {
   const [product, setProduct] = useState(null);
@@ -69,7 +65,7 @@ export default function ProductDetail({ productId, onBack }) {
               {product.name}
             </h1>
             <p className="text-2xl font-bold text-brand-700">
-              {priceFormatter.format(product.price)}
+              {formatPrice(product.price)}
             </p>
             <p className="leading-relaxed text-stone-600">
               {product.description}

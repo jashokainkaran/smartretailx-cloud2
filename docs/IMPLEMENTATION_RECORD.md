@@ -1264,6 +1264,24 @@ infrastructure-as-code and container-image publishing that Terraform's dependenc
 resolve on its own, because "does this ECR repository contain a usable image" is not a fact
 Terraform's plan/apply cycle tracks.
 
+**Trailing zeros were being lost on the way out of DynamoDB.**
+*Symptom:* after the Order service was built, `test_batch_get_returns_requested_products` failed
+with `assert '20.5' == '20.50'`, and two order tests failed the same way (`'27.5'` for `27.50`,
+`'20'` for `20.00`). *Root cause:* DynamoDB stores numbers in a canonical form and discards
+trailing zeros. A price written as `Decimal("20.50")` reads back as `Decimal("20.5")`, which
+Pydantic then serialised faithfully as `"20.5"`. ADR-039 had addressed the JSON-parsing half of
+the trailing-zero problem — transmit strings, never JSON numbers — but not the storage half.
+*Why it had not surfaced before:* the pre-existing suites passed by accident of their test data.
+`19.99` has no trailing zero to lose; `20.50` does. The bug had been latent in the Product and
+Payment services since they were written. *Resolution:* a Pydantic `field_serializer` on every
+monetary field quantizing to two decimal places on output (ADR-039, as amended). No stored value
+changes and no arithmetic changes — `quantize` only pads, so `30.89` stays `30.89` — only the
+wire format is made independent of how DynamoDB chose to store the number. *Illustrates:* the
+value of running the suites against DynamoDB Local rather than an in-process emulator. The same
+tests passed against an emulator, which did not reproduce DynamoDB's numeric normalisation; the
+choice of test double was itself load-bearing, and a green suite against the wrong double is
+weaker evidence than it appears.
+
 ---
 
 ## 8. Known Limitations
@@ -1292,6 +1310,16 @@ Terraform's plan/apply cycle tracks.
 
 ### Genuine gaps
 
+- **The system is single-currency and the currency is implicit.** All amounts are US dollars
+  (USD); no model carries a currency code. Two decimal places is assumed everywhere — in the
+  `decimal_places=2` validation, in the serialisation quantization (ADR-039), and implicitly in
+  every price in the catalogue. This is a genuine weakness against a brief describing a
+  multinational platform across Europe, Asia and the Middle East: an amount without a currency
+  is not a well-formed monetary value, and the two-decimal assumption does not hold universally
+  (JPY has zero decimal places, KWD and BHD have three, so the quantization would be wrong for
+  either). The correct model is an amount paired with an ISO-4217 code with the scale derived
+  from the code, plus a decision on whether prices are stored per-currency or converted at
+  display time. Deferred on time; recorded so the assumption is stated rather than unexamined.
 - Evidence capture (screenshots, logs) is significantly behind the actual build — only two
   screenshots exist in `evidence/screenshots/`, both for the Product service, despite
   substantially more having been built and deployed since.

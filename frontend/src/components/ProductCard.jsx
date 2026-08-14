@@ -1,9 +1,5 @@
 import ImagePlaceholder from "./ImagePlaceholder.jsx";
-
-const priceFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
+import { formatPrice } from "../lib/currency.js";
 
 export default function ProductCard({ product, onSelect }) {
   return (
@@ -32,7 +28,7 @@ export default function ProductCard({ product, onSelect }) {
           {product.description}
         </p>
         <p className="mt-auto pt-2 text-lg font-semibold text-stone-900">
-          {priceFormatter.format(product.price)}
+          {formatPrice(product.price)}
         </p>
       </div>
     </button>

@@ -1,5 +1,5 @@
-from decimal import Decimal
-from pydantic import BaseModel, Field
+from decimal import Decimal, ROUND_HALF_UP
+from pydantic import BaseModel, Field, field_serializer
 from typing import Optional
 
 
@@ -27,3 +27,20 @@ class Payment(BaseModel):
     created_at: str
     refunded_at: Optional[str] = None
     already_refunded: Optional[bool] = None
+
+    @field_serializer("amount")
+    def _serialise_amount(self, value: Decimal) -> str:
+        """
+        Force two decimal places on the way out.
+
+        DynamoDB discards trailing zeros, so an amount stored as 20.50 reads
+        back as 20.5. quantize only pads — 30.89 stays 30.89 — so the value
+        is unchanged and only the wire format is stabilised. ROUND_HALF_UP
+        is unreachable given decimal_places=2 validation on PaymentRequest,
+        but is stated rather than inheriting Python's banker's rounding,
+        which rounds 30.885 down where a human expects up.
+
+        Amounts are US dollars (USD); two decimal places is correct for
+        cents and assumed system-wide (see ADR-039).
+        """
+        return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
