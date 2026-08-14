@@ -19,9 +19,10 @@ Catalogue, Inventory, Payment, Order, Notification, and User Profile.
 - **Product Catalogue service** — complete.
 - **Inventory service** — complete.
 - **Payment service** — complete.
+- **Order service and the checkout saga** — complete (§2.5).
 
-**Not started:** Order, Notification, User Profile. No code exists for any of them beyond a
-`.gitkeep` placeholder directory under `backend/services/`.
+**Not started:** Notification, User Profile. No code exists for either beyond a `.gitkeep`
+placeholder directory under `backend/services/`.
 
 **Deployed to AWS (eu-west-1):**
 - The event backbone (EventBridge bus, SQS queue, DLQ) — Terraform-provisioned.
@@ -58,13 +59,15 @@ Terraform at all.
    table, creating a stock record with `available_quantity: 0`, `reserved_quantity: 0`.
 8. From this point, the Inventory service (running locally on port 8081) can `add_stock`,
    `reserve_stock`, `release_stock`, and `confirm_stock` against that record.
-9. The Payment service (running locally on port 8082) can independently `charge` and `refund`
-   against a mock PSP. Nothing currently connects a payment to an order or to inventory
-   reservation, because the Order service — the component that would orchestrate reserve →
-   charge → confirm as a saga (ADR-028) — does not exist yet.
+9. The Order service (running locally on port 8083) orchestrates a purchase across the other
+   three: it prices the basket from the Product Catalogue, reserves stock all-or-nothing,
+   charges the Payment service, confirms the reservation, and writes `CONFIRMED` together with
+   an `OrderConfirmed` outbox record in one transaction. Every failure path compensates or
+   escalates explicitly (§2.5).
 
-No checkout flow exists end to end. The system currently proves that a product creation event
-reliably reaches Inventory; it does not yet prove a complete purchase.
+A complete checkout flow now exists end to end, locally. The deployed slice on AWS proves that
+a product creation event reliably reaches Inventory; the saga itself has been proven by its
+test suite and has not yet been exercised against deployed services behind API Gateway.
 
 ---
 
@@ -384,6 +387,253 @@ days). Logs a per-batch summary of `published`/`skipped` counts at INFO.
 **Test coverage:** none. `backend/services/outbox-relay/` has no `tests/` directory.
 
 ---
+
+### 2.5 Order Service and the Checkout Saga
+
+**Location:** `backend/services/order-service/`. **Port (local):** 8083.
+
+**Purpose and scope:** owns order records and orchestrates the checkout saga (ADR-028) —
+reserve stock, take payment, confirm the reservation — invoking compensating actions itself
+when a step fails. It is the only service in the system that coordinates other services.
+
+**Endpoints** (`app/main.py`):
+
+| Method | Path | Request | Success | Failure |
+|---|---|---|---|---|
+| GET | `/health` | — | 200 `{"status": "ok"}` | — |
+| POST | `/api/v1/orders` | `OrderCreate` | 201 `Order` in a terminal state | 409 if the basket cannot be priced; 503 if the catalogue is unreachable; 422 on an empty basket or non-positive quantity |
+| GET | `/api/v1/orders/stuck` | — | 200 `list[Order]` needing reconciliation | — |
+| GET | `/api/v1/orders/{order_id}` | — | 200 `Order` | 404 if missing |
+| GET | `/api/v1/orders` | query: `customer_id` (required), `limit` (1–100, default 20), `cursor` | 200 `OrderPage` | 400 on a malformed cursor |
+
+`POST /api/v1/orders` returns **201 regardless of the saga's outcome**, including `REJECTED`,
+`PAYMENT_UNKNOWN`, `STOCK_UNKNOWN` and `COMPENSATION_FAILED`. The order record was created, is
+addressable, and its `status` field carries the result. A 4xx would assert that the request was
+malformed, which it was not — the stock simply ran out. The only two failures that produce no
+order at all are those where nothing happened anywhere: an unpriceable basket and an unreachable
+catalogue.
+
+`/api/v1/orders/stuck` is declared **before** `/api/v1/orders/{order_id}` in the source file.
+FastAPI matches routes in declaration order, so the parameterised route would otherwise capture
+`"stuck"` as an order id and return 404.
+
+**Data model** (`app/models.py`):
+- `OrderItemRequest`: `product_id: str`, `quantity: int` (`gt=0`). Carries **no price**.
+- `OrderCreate`: `customer_id: str`, `items: list[OrderItemRequest]` (`min_length=1`,
+  `max_length=100`), `payment_token: str`.
+- `OrderLineItem`: `product_id`, `quantity`, `unit_price: Decimal`, `name` — the stored form,
+  with the price resolved server-side.
+- `Order`: `order_id`, `customer_id`, `items: list[OrderLineItem]`, `total: Decimal`,
+  `status: str`, `payment_id: Optional[str]`, `failure_reason: Optional[str]`, `created_at`,
+  `updated_at`.
+- `OrderPage`: `items: list[Order]`, `next_cursor: Optional[str]`.
+
+**DynamoDB tables:**
+- `orders` (`config.ORDERS_TABLE`, `smartretailx-dev-orders` in AWS). Hash key `order_id` (S).
+  Two GSIs: `customer-orders-index` (hash `customer_id`, range `created_at`) and
+  `saga-status-index` (hash `saga_status`, range `created_at`). `point_in_time_recovery`
+  enabled.
+- `order-outbox` (`config.ORDER_OUTBOX_TABLE`). Hash key `event_id` (S), Streams `NEW_IMAGE`,
+  sparse `pending-index`, 7-day TTL — the same shape as `product-outbox`.
+
+#### The states
+
+Nine in total, in `app/states.py`.
+
+In flight: `PENDING` → `RESERVING_STOCK` → `TAKING_PAYMENT` → `CONFIRMING_STOCK`.
+Terminal: `CONFIRMED`, `REJECTED`, `FAILED`, `PAYMENT_UNKNOWN`, `STOCK_UNKNOWN`,
+`COMPENSATION_FAILED`.
+
+ADR-033 requires each state to be written **before** the call it describes. The states were
+therefore renamed from the ADR's original `STOCK_RESERVED` / `PAYMENT_TAKEN` to the progressive
+forms above: a record saying `STOCK_RESERVED`, written before the reserve has happened, asserts
+as fact something that might never occur, whereas `RESERVING_STOCK` asserts only what the saga
+was attempting. The semantics are unchanged — intent before action — but the record no longer
+states a falsehood, and recovery reads correctly: the state says what was being attempted, the
+participant says whether it happened.
+
+Two of the terminal states are amendments to ADR-033, which originally listed four. Both were
+added because an outcome existed that the four could not represent (see §7).
+
+#### The distinction the whole saga turns on
+
+`app/clients.py` classifies every downstream outcome into exactly two failure kinds, and every
+branch of the saga depends on which one it gets:
+
+- **`DownstreamRejected`** — the service answered, and the answer was no. A 4xx. The request
+  reached the service, was understood, and was refused; all downstream 4xx responses in this
+  system come from conditional writes that either applied or did not. The outcome is known.
+- **`DownstreamUnknown`** — no usable answer at all. A timeout, a dropped connection, or a 5xx.
+  The operation may have completed perfectly and lost the reply, or never have happened.
+
+The mapping is: 2xx → success; 4xx → `DownstreamRejected`; 5xx, timeout and connection error →
+`DownstreamUnknown`.
+
+Collapsing these two into a single "it failed" is the most dangerous simplification available in
+a saga, because **the correct response to each is the opposite of the other**. A refusal should
+be compensated. A non-answer must not be, because compensating something that never happened
+causes precisely the damage the compensation exists to prevent: refunding a customer who was
+never charged, or releasing stock that was never reserved.
+
+#### Why stock is reserved before the card is charged
+
+The step order is itself a decision. Reserving first means the failure that can occur before any
+money moves is the stock failure, whose compensation costs nobody anything. Charging first would
+mean that a subsequent reservation failure has already taken the customer's money and owes a
+refund — converting a bookkeeping problem into a financial one. Where the ordering of two
+fallible steps is free to choose, the step allowed to fail first should be the one that is not
+about money.
+
+#### The flow, with every branch
+
+1. **Price the basket.** `clients.fetch_products()` resolves every line against the Product
+   Catalogue in one `BatchGetItem`-backed call. The client never sends a price — `OrderCreate`
+   has nowhere to put one — so a tampered request cannot alter the total. Prices are
+   **snapshotted** onto `OrderLineItem`: an order is a historical record of an agreement, not a
+   live view of the catalogue, and must keep showing what the customer agreed to after the
+   catalogue price changes. An unknown or deactivated product raises `BasketInvalid` → 409, and
+   **no order record is created**, because pricing is a pure read with no side effects; unlike a
+   stock failure there is nothing to audit. Deactivated products are returned by the batch
+   endpoint rather than filtered out (ADR-037) precisely so this check can distinguish a
+   withdrawn product from a non-existent one and tell the customer which.
+2. **Write the order `PENDING`**, via a conditional `put_item` on `attribute_not_exists(order_id)`
+   so a retried POST cannot overwrite an in-flight order and restart its saga.
+3. **Write `RESERVING_STOCK`, then call `POST /api/v1/inventory/reserve`.**
+   - `DownstreamRejected` (409) → `REJECTED`. Nothing to compensate: the reserve is a single
+     `TransactWriteItems`, so a failure leaves every product in the basket untouched.
+   - `DownstreamUnknown` → `STOCK_UNKNOWN`. No release is attempted.
+4. **Write `TAKING_PAYMENT`, then call `POST /api/v1/payments`.**
+   - `DownstreamRejected` (402, declined) → release the stock, then `FAILED`. Safe because a 402
+     is a definite answer. If the release itself fails → `COMPENSATION_FAILED`.
+   - `DownstreamUnknown` → `PAYMENT_UNKNOWN`. Stock is **not** released and no refund is
+     attempted (ADR-034).
+5. **Write `CONFIRMING_STOCK`, then call `POST /api/v1/inventory/confirm`.**
+   - `DownstreamRejected` → refund, then `FAILED`. The Payment service's refund is idempotent,
+     so a retry cannot double-refund. If the refund fails → `COMPENSATION_FAILED`.
+   - `DownstreamUnknown` → `STOCK_UNKNOWN`, retaining `payment_id`.
+6. **`CONFIRMED`**, written together with an `OrderConfirmed` outbox record in one transaction.
+
+**Compensation is attempted once.** There is no retry loop before `COMPENSATION_FAILED`.
+ADR-035 rejected silent retry-then-log because it buries a financial discrepancy in a log line;
+a bounded compensation retry queue is the correct production design and was deferred on time,
+with this state as the fallback it would still require.
+
+#### Why `PAYMENT_UNKNOWN` and `STOCK_UNKNOWN` exist
+
+`PAYMENT_UNKNOWN` implements ADR-034 at the saga layer. When the payment call gives no usable
+answer, the card may or may not have been charged. Releasing the stock would take goods back
+from a customer who may have paid; refunding would return money that may never have moved — and
+the Payment service rejects a refund of an `UNKNOWN` payment with 409 for exactly that reason.
+Both available actions are errors, so the saga takes neither and records the uncertainty
+instead. No event is published: nothing downstream should act on an outcome that is genuinely
+undetermined.
+
+`STOCK_UNKNOWN` is the same principle applied to the inventory calls, and it exists **only
+because ADR-040 was deferred**. Without reservation identity, a timed-out reserve cannot be
+resolved after the fact: reading `available_quantity` is uninformative, because it moves for
+other customers' reasons, and nothing anywhere records which order holds which units. The three
+alternatives were each rejected for asserting something unverified — treating it as `REJECTED`
+leaks stock permanently and silently if the reserve did land; issuing a release invents stock
+that never existed if it did not, reintroducing the oversell ADR-017 prevents; leaving the order
+in flight makes a dead saga indistinguishable from a running one. With reservation identity the
+saga would simply query the reservation and know, and this state would not exist. It is a
+visible, traceable consequence of a deliberate trade-off rather than an accident.
+
+The two differ in what is at stake: reached from `RESERVING_STOCK`, no money has moved; reached
+from `CONFIRMING_STOCK`, the customer has already paid, and `payment_id` is retained so a human
+reconciling the order can see that.
+
+#### The conditional state transition
+
+`repository.set_status()` guards every transition with
+`ConditionExpression="#status = :expected"`. This is what makes the saga safe against a
+duplicate or concurrent run: two invocations for the same order cannot both advance it, because
+the second one's condition fails against a state that has already moved on. It is the same
+primitive as `available_quantity >= :qty` in Inventory — the correctness condition lives inside
+the atomic write rather than in a read-then-write that something might interleave. `status` is a
+DynamoDB reserved word and is routed through an `ExpressionAttributeNames` placeholder, as is
+every other name, for the reason given in ADR-038.
+
+#### The sparse recovery index
+
+`saga_status` is a second attribute holding the same value as `status`, existing only to drive
+`saga-status-index`. It is `REMOVE`d when an order reaches `CONFIRMED`, `REJECTED` or `FAILED` —
+at which point the item no longer has a value for the index's hash key and drops out of the
+index entirely — and deliberately **retained** for `PAYMENT_UNKNOWN`, `STOCK_UNKNOWN` and
+`COMPENSATION_FAILED`. The index therefore contains exactly two categories: orders still in
+flight, and orders a human must resolve. In a healthy system it is near-empty, and anything
+lingering in it is by construction a problem. This is the same technique as the outbox's
+`pending-index` (§3).
+
+`list_orders_needing_attention()` issues **one query per status**, because a GSI hash key can
+only be queried for equality — there is no query for "any value of `saga_status`". That
+constraint is why `NEEDS_ATTENTION` is a small, closed set.
+
+#### Terminal states and the outbox
+
+`repository.set_status_and_publish()` writes the terminal state and an outbox record in a single
+`TransactWriteItems` across the `orders` and `order-outbox` tables. Writing `CONFIRMED` and then
+failing to publish `OrderConfirmed` would leave a paid, confirmed order that no consumer ever
+hears about, with nothing recording that a publish was owed — the dual-write failure ADR-020
+exists to prevent. The publish cannot be made atomic with the state change, but the decision to
+publish can, because both are DynamoDB writes.
+
+`OrderConfirmed` is published on `CONFIRMED`; `OrderFailed` on `REJECTED` and on `FAILED`. The
+three reconciliation states publish **nothing**, on the grounds that an unresolved discrepancy
+is not a clean business outcome to broadcast.
+
+The outbox record carries an `event_source` field (`smartretailx.orders`). The relay Lambda was
+changed to read the source from the record, falling back to its previous hardcoded
+`smartretailx.catalogue` for records written before the field existed. This keeps ADR-021's
+position intact — the source string is part of the contract and belongs to the publisher, not to
+the relay's configuration — while allowing one relay image to serve both outboxes as two
+separately-deployed Lambdas with different `OUTBOX_TABLE` values (ADR-024).
+
+**Not yet routed:** no EventBridge rule matches `OrderConfirmed` or `OrderFailed`, because no
+consumer exists. The events reach the bus and match nothing, which is the correct behaviour for
+a published event with no subscribers and is the decoupling the bus exists to provide. The
+Notification service will add the rule and its queue.
+
+**Test coverage** (`tests/test_orders.py`, 26 tests, against throwaway `OrdersTest` and
+`OrderOutboxTest` tables, with the HTTP clients replaced by in-memory doubles so that each
+downstream failure mode can be injected deterministically):
+
+| Test | Proves |
+|---|---|
+| `test_health` | Health endpoint works. |
+| `test_checkout_confirms_the_order` | The happy path reaches `CONFIRMED`, each step ran exactly once, nothing was compensated. |
+| `test_total_is_computed_server_side_from_catalogue_prices` | 2 × 10.00 + 3 × 2.50 = `"27.50"`, priced from the catalogue, serialised as a string. |
+| `test_client_supplied_price_is_ignored` | A `unit_price` in the request body does not affect the total. |
+| `test_confirmed_order_publishes_an_outbox_event` | `OrderConfirmed` written with the correct envelope, `event_source` and `status: PENDING`. |
+| `test_confirmed_order_leaves_the_recovery_index` | `saga_status` is absent after `CONFIRMED`, and `/orders/stuck` is empty. |
+| `test_insufficient_stock_rejects_without_charging` | 409 from reserve → `REJECTED`, no charge, no release. |
+| `test_rejected_order_publishes_order_failed` | A rejection emits `OrderFailed`. |
+| `test_reserve_timeout_records_stock_unknown` | A timeout → `STOCK_UNKNOWN`, **no release attempted**, no event. |
+| `test_declined_payment_releases_stock_and_fails` | 402 → stock released → `FAILED`, with `payment_id` recorded. |
+| `test_failed_compensation_is_a_visible_terminal_state` | Decline + failed release → `COMPENSATION_FAILED`, stays in the index, emits no event. |
+| `test_unknown_payment_does_not_release_or_refund` | `PAYMENT_UNKNOWN` performs neither compensating action. |
+| `test_unknown_payment_is_distinct_from_declined` | The same step failing two ways yields two states and two different decisions — ADR-034 in one assertion. |
+| `test_confirm_failure_refunds_the_payment` | Confirm fails → refund issued → `FAILED`. |
+| `test_confirm_failure_with_failed_refund_is_compensation_failed` | Charged customer, no goods, refund failed → `COMPENSATION_FAILED`. |
+| `test_confirm_timeout_records_stock_unknown_with_payment` | Confirm timeout → `STOCK_UNKNOWN` retaining `payment_id`, no refund. |
+| `test_unknown_product_is_rejected_without_creating_an_order` | 409, no order, no reserve. |
+| `test_deactivated_product_is_rejected_with_its_own_message` | A withdrawn product yields a different message from a missing one. |
+| `test_catalogue_unavailable_returns_503` | Pricing failure returns 503 (safely retryable), not 500. |
+| `test_empty_basket_is_rejected` | 422 at the model boundary, no order. |
+| `test_zero_quantity_is_rejected` | 422 at the model boundary. |
+| `test_state_transition_requires_the_expected_current_state` | The conditional write refuses to advance an order out of a state it has already left — the duplicate-run guard. |
+| `test_get_missing_order_returns_404` | Unknown id returns 404. |
+| `test_list_orders_by_customer_is_newest_first` | The customer GSI returns only that customer's orders, newest first. |
+| `test_list_orders_paginates` | Cursor pagination across the customer index. |
+| `test_stuck_orders_lists_every_needs_attention_state` | Both `PAYMENT_UNKNOWN` and `STOCK_UNKNOWN` appear, proving the per-status query loop. |
+
+**Not tested:** the saga against real HTTP services (the clients are doubles in every test, so
+`clients.py`'s own status-code mapping is exercised only indirectly); a genuine mid-saga process
+crash, as opposed to an injected downstream failure; the `set_status_and_publish` transaction
+failing on its outbox condition rather than its status condition.
+
+---
+
 
 ## 3. Event-Driven Architecture
 
@@ -803,13 +1053,14 @@ listed as not-yet-deployed work in `docs/PROJECT_BRIEF.md`'s Next Steps.
 
 | Suite | Test count | Notes |
 |---|---|---|
-| `product-service/tests/test_products.py` | 10 | Listed in §2.1. |
-| `inventory-service/tests/test_inventory.py` | 8 | Listed in §2.2. |
+| `product-service/tests/test_products.py` | 16 | Listed in §2.1; 6 cover the batch price lookup. |
+| `inventory-service/tests/test_inventory.py` | 20 | Listed in §2.2; 12 cover the all-or-nothing batch operations. |
 | `payment-service/tests/test_payments.py` | 14 | Listed in §2.3. |
+| `order-service/tests/test_orders.py` | 26 | Listed in §2.5; covers every branch of the saga. |
 | `outbox-relay` | 0 | No `tests/` directory exists. |
 | `tests/k6/oversell_test.js` | 1 load-test scenario | See below. |
 
-**32 automated unit/integration tests total** across the three HTTP services, each run with
+**76 automated unit/integration tests total** across the four HTTP services, each run with
 `pytest` against a per-test throwaway DynamoDB Local table (created and torn down by an
 `autouse` fixture), requiring `DYNAMODB_ENDPOINT` to be set explicitly before the app module is
 imported in every suite. Tests act as promotion gates in the project's stated methodology
