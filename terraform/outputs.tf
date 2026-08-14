@@ -36,3 +36,7 @@ output "ecr_outbox_relay_url" {
 output "payments_table_name" {
   value = aws_dynamodb_table.payments.name
 }
+
+output "orders_table_name" {
+  value = aws_dynamodb_table.orders.name
+}
