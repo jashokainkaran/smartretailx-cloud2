@@ -130,6 +130,96 @@ def test_already_refunded_is_not_persisted():
     assert fetched.json()["already_refunded"] is None
 
 
+class _RaisingProvider:
+    """Stand-in provider used to simulate a PSP that never returns."""
+
+    def charge(self, amount, payment_token, idempotency_key):
+        raise RuntimeError("simulated PSP timeout")
+
+    def refund(self, transaction_reference, idempotency_key):
+        return True
+
+
+def test_charge_provider_exception_returns_500_and_records_unknown(monkeypatch):
+    monkeypatch.setattr("app.repository.get_provider", lambda: _RaisingProvider())
+
+    # The default client re-raises server exceptions instead of turning
+    # them into a response; this endpoint's 500 needs to be observable.
+    local_client = TestClient(app, raise_server_exceptions=False)
+    response = local_client.post("/api/v1/payments", json={
+        "order_id": "order-9",
+        "amount": "10.00",
+        "payment_token": "tok_test",
+    })
+    assert response.status_code == 500
+
+    from app import repository
+    items = repository.table.scan()["Items"]
+    matching = [i for i in items if i["order_id"] == "order-9"]
+    assert len(matching) == 1
+    assert matching[0]["status"] == "UNKNOWN"
+    assert "simulated PSP timeout" in matching[0]["failure_reason"]
+
+
+def test_refund_unknown_payment_returns_409(monkeypatch):
+    monkeypatch.setattr("app.repository.get_provider", lambda: _RaisingProvider())
+
+    local_client = TestClient(app, raise_server_exceptions=False)
+    local_client.post("/api/v1/payments", json={
+        "order_id": "order-10",
+        "amount": "10.00",
+        "payment_token": "tok_test",
+    })
+
+    from app import repository
+    items = repository.table.scan()["Items"]
+    payment_id = [i for i in items if i["order_id"] == "order-10"][0]["payment_id"]
+
+    response = client.post(f"/api/v1/payments/{payment_id}/refund")
+    assert response.status_code == 409
+
+
+def test_charge_does_not_persist_already_refunded():
+    created = client.post("/api/v1/payments", json={
+        "order_id": "order-11",
+        "amount": "10.00",
+        "payment_token": "tok_test",
+    }).json()
+
+    dynamodb = boto3.resource(
+        "dynamodb",
+        endpoint_url=config.DYNAMODB_ENDPOINT,
+        region_name=config.AWS_REGION,
+        aws_access_key_id="local",
+        aws_secret_access_key="local",
+    )
+    raw_table = dynamodb.Table("PaymentsTest")
+    item = raw_table.get_item(Key={"payment_id": created["payment_id"]})["Item"]
+
+    assert "already_refunded" not in item
+
+
+def test_refund_pending_payment_returns_409():
+    dynamodb = boto3.resource(
+        "dynamodb",
+        endpoint_url=config.DYNAMODB_ENDPOINT,
+        region_name=config.AWS_REGION,
+        aws_access_key_id="local",
+        aws_secret_access_key="local",
+    )
+    raw_table = dynamodb.Table("PaymentsTest")
+    raw_table.put_item(Item={
+        "payment_id": "pending-payment-1",
+        "order_id": "order-12",
+        "amount": "10.00",
+        "status": "PENDING",
+        "created_at": "2026-08-14T00:00:00+00:00",
+    })
+
+    response = client.post("/api/v1/payments/pending-payment-1/refund")
+    assert response.status_code == 409
+
+
 def test_refund_failed_payment_returns_409():
     created = client.post("/api/v1/payments", json={
         "order_id": "order-6",
