@@ -1,11 +1,12 @@
 import boto3
 import uuid
 from app import config
-from app.models import ProductCreate, Product
+from app.models import ProductCreate, Product, ProductUpdate
 import json
 import base64
 from decimal import Decimal
 from boto3.dynamodb.types import TypeSerializer
+from botocore.exceptions import ClientError
 from datetime import datetime, timezone
 
 def _floats_to_decimal(obj):
@@ -94,9 +95,68 @@ def get_product(product_id: str) -> Product | None:
     return Product(**item)
 
 
-def list_products(limit: int = 20, cursor: str | None = None):
+def update_product(product_id: str, data: ProductUpdate) -> Product | None:
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+
+    if not updates:
+        # Nothing to change. DynamoDB rejects an empty UpdateExpression, so
+        # just hand back the product as it currently stands.
+        return get_product(product_id)
+
+    updates = _floats_to_decimal(updates)
+
+    # Attribute names go through placeholders throughout — "name" is a
+    # DynamoDB reserved word, and routing every field through a placeholder
+    # avoids having to track which of the rest are safe.
+    update_expression = "SET " + ", ".join(f"#{k} = :{k}" for k in updates)
+    expression_attribute_names = {f"#{k}": k for k in updates}
+    expression_attribute_values = {f":{k}": v for k, v in updates.items()}
+
+    try:
+        response = table.update_item(
+            Key={"id": product_id},
+            UpdateExpression=update_expression,
+            ConditionExpression="attribute_exists(id)",
+            ExpressionAttributeNames=expression_attribute_names,
+            ExpressionAttributeValues=expression_attribute_values,
+            ReturnValues="ALL_NEW",
+        )
+        return Product(**response["Attributes"])
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # Condition failed — the product doesn't exist.
+            return None
+        raise
+
+
+def set_product_active(product_id: str, active: bool) -> Product | None:
+    try:
+        response = table.update_item(
+            Key={"id": product_id},
+            UpdateExpression="SET #active = :active",
+            ConditionExpression="attribute_exists(id)",
+            ExpressionAttributeNames={"#active": "active"},
+            ExpressionAttributeValues={":active": active},
+            ReturnValues="ALL_NEW",
+        )
+        return Product(**response["Attributes"])
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+def list_products(limit: int = 20, cursor: str | None = None, include_inactive: bool = False):
     # Build the scan request: read at most `limit` items.
     scan_kwargs = {"Limit": limit}
+
+    if not include_inactive:
+        # Products created before `active` existed have no such attribute
+        # at all — treat a MISSING active attribute as active, not as
+        # inactive, so old records aren't silently hidden.
+        scan_kwargs["FilterExpression"] = "attribute_not_exists(#active) OR #active = :true"
+        scan_kwargs["ExpressionAttributeNames"] = {"#active": "active"}
+        scan_kwargs["ExpressionAttributeValues"] = {":true": True}
 
     # If the client sent a cursor, decode it back into DynamoDB's key format
     # and tell DynamoDB to resume from there.

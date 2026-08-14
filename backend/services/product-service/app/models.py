@@ -17,9 +17,22 @@ class ProductCreate(ProductBase):
     pass
 
 
-# What we STORE and SEND BACK — the base fields PLUS the id.
+# What a client sends us when UPDATING a product. Every field is optional,
+# so the client can send only what changed rather than resending the whole
+# product (a partial update, not a full replace).
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[Decimal] = Field(None, gt=0, decimal_places=2)
+    category: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+# What we STORE and SEND BACK — the base fields plus the id and active flag.
+# `active` is server-controlled: clients never set it on creation.
 class Product(ProductBase):
     id: str
+    active: bool = True
 
 
 # The shape returned by the paginated list endpoint.

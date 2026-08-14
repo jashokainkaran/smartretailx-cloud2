@@ -131,3 +131,30 @@ def add_stock(product_id: str, quantity: int):
         ReturnValues="ALL_NEW",
     )
     return response["Attributes"]
+
+
+def create_stock_record(product_id: str) -> bool:
+    """
+    Create an empty stock record for a newly-created product.
+
+    Uses a conditional write: the record is only created if one does not
+    already exist. This makes the operation idempotent, which matters
+    because SQS guarantees at-least-once delivery — the same
+    ProductCreated event can legitimately arrive more than once.
+
+    Returns True if a record was created, False if one already existed.
+    """
+    try:
+        table.put_item(
+            Item={
+                "product_id": product_id,
+                "available_quantity": 0,
+                "reserved_quantity": 0,
+            },
+            ConditionExpression="attribute_not_exists(product_id)",
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise

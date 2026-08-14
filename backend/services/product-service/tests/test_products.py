@@ -102,6 +102,81 @@ def test_get_missing_product_returns_404():
     assert response.status_code == 404
 
 
+def test_update_product_changes_only_supplied_fields():
+    created = client.post("/api/v1/products", json={
+        "name": "Original Name",
+        "description": "Original description",
+        "price": 10.00,
+        "category": "Testing",
+    }).json()
+
+    response = client.put(f"/api/v1/products/{created['id']}", json={
+        "price": "25.00",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["price"] == "25.00"
+    assert body["name"] == "Original Name"
+    assert body["description"] == "Original description"
+    assert body["category"] == "Testing"
+
+
+def test_update_missing_product_returns_404():
+    response = client.put("/api/v1/products/does-not-exist", json={"name": "New Name"})
+    assert response.status_code == 404
+
+
+def test_deactivate_then_list_excludes_by_default():
+    created = client.post("/api/v1/products", json={
+        "name": "Deactivate Me",
+        "description": "x",
+        "price": 1.0,
+        "category": "Testing",
+    }).json()
+
+    deactivate_response = client.patch(f"/api/v1/products/{created['id']}/deactivate")
+    assert deactivate_response.status_code == 200
+    assert deactivate_response.json()["active"] is False
+
+    listing = client.get("/api/v1/products").json()
+    ids = [item["id"] for item in listing["items"]]
+    assert created["id"] not in ids
+
+
+def test_deactivate_then_list_include_inactive_shows_it():
+    created = client.post("/api/v1/products", json={
+        "name": "Still Findable",
+        "description": "x",
+        "price": 1.0,
+        "category": "Testing",
+    }).json()
+
+    client.patch(f"/api/v1/products/{created['id']}/deactivate")
+
+    listing = client.get("/api/v1/products?include_inactive=true").json()
+    ids = [item["id"] for item in listing["items"]]
+    assert created["id"] in ids
+
+
+def test_activate_restores_default_listing():
+    created = client.post("/api/v1/products", json={
+        "name": "Round Trip",
+        "description": "x",
+        "price": 1.0,
+        "category": "Testing",
+    }).json()
+
+    client.patch(f"/api/v1/products/{created['id']}/deactivate")
+    activate_response = client.patch(f"/api/v1/products/{created['id']}/activate")
+    assert activate_response.status_code == 200
+    assert activate_response.json()["active"] is True
+
+    listing = client.get("/api/v1/products").json()
+    ids = [item["id"] for item in listing["items"]]
+    assert created["id"] in ids
+
+
 def test_list_products_pagination():
     # Create 3 products.
     for i in range(3):
