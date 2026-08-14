@@ -32,3 +32,7 @@ output "ecr_product_service_url" {
 output "ecr_outbox_relay_url" {
   value = aws_ecr_repository.outbox_relay.repository_url
 }
+
+output "payments_table_name" {
+  value = aws_dynamodb_table.payments.name
+}

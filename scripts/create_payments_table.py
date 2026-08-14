@@ -1,8 +1,8 @@
 import sys
 import os
 
-# Let this script import the product-service's app package.
-SERVICE_DIR = os.path.join(os.path.dirname(__file__), "..", "backend", "services", "product-service")
+# Let this script import the payment-service's app package.
+SERVICE_DIR = os.path.join(os.path.dirname(__file__), "..", "backend", "services", "payment-service")
 sys.path.insert(0, os.path.abspath(SERVICE_DIR))
 
 import boto3
@@ -27,21 +27,21 @@ dynamodb = boto3.resource(
 )
 
 
-def create_outbox_table():
+def create_payments_table():
     existing = [t.name for t in dynamodb.tables.all()]
-    if config.OUTBOX_TABLE in existing:
-        print(f"ℹ️  Table '{config.OUTBOX_TABLE}' already exists — skipping.")
+    if config.PAYMENTS_TABLE in existing:
+        print(f"ℹ️  Table '{config.PAYMENTS_TABLE}' already exists — skipping.")
         return
 
     table = dynamodb.create_table(
-        TableName=config.OUTBOX_TABLE,
-        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
-        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+        TableName=config.PAYMENTS_TABLE,
+        KeySchema=[{"AttributeName": "payment_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "payment_id", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
     table.wait_until_exists()
-    print(f"✅ Table '{config.OUTBOX_TABLE}' created.")
+    print(f"✅ Table '{config.PAYMENTS_TABLE}' created.")
 
 
 if __name__ == "__main__":
-    create_outbox_table()
+    create_payments_table()

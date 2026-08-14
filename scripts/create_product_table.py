@@ -10,9 +10,17 @@ from botocore.exceptions import ClientError
 from app import config   # reuse the ONE source of truth for endpoint/region/table
 
 
+# These scripts are local-only tooling — AWS tables are provisioned by
+# Terraform. The service's config.DYNAMODB_ENDPOINT defaults to None so
+# that the service itself reaches real AWS in production; a script
+# inheriting that None would silently target real AWS too, and fail with
+# an unrecognised-client error since it still sends dummy credentials. The
+# endpoint here deliberately defaults to DynamoDB Local instead.
+DYNAMODB_LOCAL_ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT", "http://localhost:8000")
+
 dynamodb = boto3.resource(
     "dynamodb",
-    endpoint_url=config.DYNAMODB_ENDPOINT,
+    endpoint_url=DYNAMODB_LOCAL_ENDPOINT,
     region_name=config.AWS_REGION,
     aws_access_key_id="local",
     aws_secret_access_key="local",

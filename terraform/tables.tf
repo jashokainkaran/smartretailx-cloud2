@@ -27,3 +27,18 @@ resource "aws_dynamodb_table" "inventory" {
     enabled = true
   }
 }
+
+resource "aws_dynamodb_table" "payments" {
+  name         = "${local.prefix}-payments"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "payment_id"
+
+  attribute {
+    name = "payment_id"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}
