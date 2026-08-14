@@ -158,3 +158,103 @@ def create_stock_record(product_id: str) -> bool:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return False
         raise
+
+# The resource API has no transact_write_items. Transactions are only
+# available on the low-level client, so this service now needs both. Both
+# are built from the same _dynamodb_kwargs, so they cannot drift.
+dynamodb_client = boto3.client("dynamodb", **_dynamodb_kwargs)
+
+def _aggregate(items):
+    """
+    Collapse duplicate product lines into one entry each, preserving order.
+
+    DynamoDB forbids two operations on the SAME item inside a single
+    TransactWriteItems call. A basket can perfectly legitimately contain the
+    same product on two lines — "2 x widget" added twice — and without this
+    the whole transaction fails with a ValidationException that says nothing
+    useful about why.
+
+    Python dicts preserve insertion order, which matters more than it looks:
+    the transaction below is built by iterating this dict, so the position of
+    each product here is the position of its result in CancellationReasons.
+    """
+    totals = {}
+    for item in items:
+        totals[item.product_id] = totals.get(item.product_id, 0) + item.quantity
+    return totals
+
+
+def _transact_stock(totals, update_expression, condition_expression, message):
+    """
+    Apply one conditional update per product, all-or-nothing.
+
+    Every update carries the same condition the single-item functions use.
+    The difference is that TransactWriteItems makes them atomic as a group:
+    if any one product fails its condition, NONE of the writes land. Partial
+    reservation therefore cannot happen, which removes an entire class of
+    compensation from the saga.
+    """
+    transact_items = [
+        {
+            "Update": {
+                "TableName": config.INVENTORY_TABLE,
+                "Key": {"product_id": {"S": product_id}},
+                "UpdateExpression": update_expression,
+                "ConditionExpression": condition_expression,
+                # The low-level client needs DynamoDB wire format: every
+                # value is {type: value}. "N" takes a STRING, not an int —
+                # DynamoDB transmits all numbers as strings to avoid the
+                # float precision problems that motivated ADR-039.
+                "ExpressionAttributeValues": {":qty": {"N": str(quantity)}},
+            }
+        }
+        for product_id, quantity in totals.items()
+    ]
+
+    try:
+        dynamodb_client.transact_write_items(TransactItems=transact_items)
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "TransactionCanceledException":
+            raise
+        # CancellationReasons is POSITIONAL: one entry per operation, in the
+        # order we submitted them. That is what lets us name the products
+        # that actually failed rather than saying "something failed".
+        reasons = e.response.get("CancellationReasons", [])
+        failed = [
+            product_id
+            for product_id, reason in zip(totals.keys(), reasons)
+            if reason.get("Code") == "ConditionalCheckFailed"
+        ]
+        raise ValueError(f"{message}: {', '.join(failed)}")
+
+
+def reserve_many(items):
+    """Reserve every line atomically. Nothing is reserved unless all of it is."""
+    _transact_stock(
+        _aggregate(items),
+        "SET available_quantity = available_quantity - :qty, "
+        "reserved_quantity = reserved_quantity + :qty",
+        "available_quantity >= :qty",
+        "Insufficient stock for",
+    )
+
+
+def release_many(items):
+    """Compensating action: return reserved units to available."""
+    _transact_stock(
+        _aggregate(items),
+        "SET available_quantity = available_quantity + :qty, "
+        "reserved_quantity = reserved_quantity - :qty",
+        "reserved_quantity >= :qty",
+        "Cannot release more than is reserved for",
+    )
+
+
+def confirm_many(items):
+    """Goods are paid for and leaving inventory. available_quantity untouched."""
+    _transact_stock(
+        _aggregate(items),
+        "SET reserved_quantity = reserved_quantity - :qty",
+        "reserved_quantity >= :qty",
+        "Cannot confirm more than is reserved for",
+    )

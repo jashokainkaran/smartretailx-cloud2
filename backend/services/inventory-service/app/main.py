@@ -4,6 +4,8 @@ from app.models import InventoryItem
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
+from app.models import StockOperation
+
 
 app = FastAPI(
     title="SmartRetailX - Inventory Service",
@@ -73,5 +75,50 @@ def add_stock(product_id: str, quantity: int):
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     return repository.add_stock(product_id, quantity)
+
+MAX_TRANSACTION_ITEMS = 100
+
+
+def _validate_batch(items: list[StockOperation]):
+    """Reject at the boundary rather than letting DynamoDB reject opaquely."""
+    if not items:
+        raise HTTPException(status_code=400, detail="No items supplied")
+    distinct = {i.product_id for i in items}
+    if len(distinct) > MAX_TRANSACTION_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(distinct)} distinct products exceeds the "
+                   f"{MAX_TRANSACTION_ITEMS}-operation transaction limit",
+        )
+
+
+@app.post("/api/v1/inventory/reserve")
+def reserve_batch(items: list[StockOperation]):
+    _validate_batch(items)
+    try:
+        repository.reserve_many(items)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "reserved", "products": len({i.product_id for i in items})}
+
+
+@app.post("/api/v1/inventory/release")
+def release_batch(items: list[StockOperation]):
+    _validate_batch(items)
+    try:
+        repository.release_many(items)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "released", "products": len({i.product_id for i in items})}
+
+
+@app.post("/api/v1/inventory/confirm")
+def confirm_batch(items: list[StockOperation]):
+    _validate_batch(items)
+    try:
+        repository.confirm_many(items)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "confirmed", "products": len({i.product_id for i in items})}
 
 handler = Mangum(app)

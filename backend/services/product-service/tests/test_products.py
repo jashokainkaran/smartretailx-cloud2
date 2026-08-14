@@ -199,3 +199,95 @@ def test_list_products_pagination():
     body2 = response2.json()
     assert len(body2["items"]) == 1
     assert body2["next_cursor"] is None
+
+# ---------------------------------------------------------------------------
+# Batch lookup — used by the Order saga to price a basket server-side.
+# ---------------------------------------------------------------------------
+
+
+def _create(name, price):
+    return client.post("/api/v1/products", json={
+        "name": name,
+        "description": "Batch test",
+        "price": price,
+        "category": "Testing",
+    }).json()
+
+
+def test_batch_get_returns_requested_products():
+    a = _create("Batch A", "10.00")
+    b = _create("Batch B", "20.50")
+
+    response = client.post("/api/v1/products/batch", json={
+        "product_ids": [a["id"], b["id"]],
+    })
+    assert response.status_code == 200
+
+    returned = {p["id"]: p for p in response.json()}
+    assert set(returned) == {a["id"], b["id"]}
+    assert returned[b["id"]]["price"] == "20.50"      # string, not a float (ADR-039)
+
+
+def test_batch_get_omits_unknown_ids():
+    """
+    A missing product is absent from the response, not an error. The saga
+    compares what it asked for with what came back and rejects the order —
+    the catalogue does not decide what missing means.
+    """
+    a = _create("Batch A", "10.00")
+
+    response = client.post("/api/v1/products/batch", json={
+        "product_ids": [a["id"], "does-not-exist"],
+    })
+    assert response.status_code == 200
+
+    returned = [p["id"] for p in response.json()]
+    assert returned == [a["id"]]
+
+
+def test_batch_get_deduplicates_ids():
+    """
+    DynamoDB raises ValidationException on duplicate keys in one
+    BatchGetItem request. The same product on two basket lines is ordinary,
+    so the ids are de-duplicated before the call and the product comes back
+    exactly once.
+    """
+    a = _create("Batch A", "10.00")
+
+    response = client.post("/api/v1/products/batch", json={
+        "product_ids": [a["id"], a["id"], a["id"]],
+    })
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+def test_batch_get_includes_deactivated_products():
+    """
+    Deactivated products are returned with active: false rather than being
+    filtered out (ADR-037). If they were omitted, the saga could not tell a
+    withdrawn product from a non-existent one, and the customer would get
+    the wrong message.
+    """
+    a = _create("Batch A", "10.00")
+    client.patch(f"/api/v1/products/{a['id']}/deactivate")
+
+    response = client.post("/api/v1/products/batch", json={
+        "product_ids": [a["id"]],
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["active"] is False
+
+
+def test_batch_get_empty_list_is_rejected():
+    response = client.post("/api/v1/products/batch", json={"product_ids": []})
+    assert response.status_code == 422
+
+
+def test_batch_get_over_100_ids_is_rejected():
+    """BatchGetItem's hard limit, enforced at the boundary with a clear error."""
+    response = client.post("/api/v1/products/batch", json={
+        "product_ids": [f"id-{n}" for n in range(101)],
+    })
+    assert response.status_code == 422

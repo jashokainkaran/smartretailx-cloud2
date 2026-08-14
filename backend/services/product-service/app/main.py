@@ -1,6 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
 from mangum import Mangum
-from app.models import ProductCreate, Product, ProductPage, ProductUpdate
+from app.models import (
+    ProductCreate,
+    Product,
+    ProductPage,
+    ProductUpdate,
+    ProductBatchRequest,
+)
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
@@ -35,6 +41,35 @@ def health():
 def create_product(product: ProductCreate):
     """Create a new product."""
     return repository.create_product(product)
+
+
+@app.post("/api/v1/products/batch", response_model=list[Product])
+def batch_get_products(request: ProductBatchRequest):
+    """
+    Fetch many products by id in one request.
+
+    Used by the Order saga to resolve prices server-side: the client never
+    sends a price, so every basket line must be priced from the catalogue
+    before the order total can be computed.
+
+    This is a read, but it is a POST rather than a GET. A GET would have to
+    carry the ids in the query string, which runs into URL length limits and
+    proxy truncation on a large basket, and would put customer basket
+    contents into access logs. The request body is the right place for a
+    variable-length list. The trade-off is that this endpoint is not
+    cacheable by HTTP intermediaries, which does not matter here — prices
+    must be current at the moment of sale.
+
+    Products that do not exist are simply absent from the response. The
+    caller compares what it asked for against what it received; the
+    catalogue does not decide what a missing product means.
+
+    Deactivated products ARE returned, carrying active: false (ADR-037).
+    Filtering them here would make "missing" and "withdrawn" indistinguishable
+    to the caller, and the saga needs to tell a customer which of the two
+    happened.
+    """
+    return repository.batch_get_products(request.product_ids)
 
 
 @app.get("/api/v1/products/{product_id}", response_model=Product)

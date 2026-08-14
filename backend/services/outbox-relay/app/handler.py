@@ -12,7 +12,21 @@ logger.setLevel(logging.INFO)
 
 EVENT_BUS_NAME = os.environ["EVENT_BUS_NAME"]
 OUTBOX_TABLE = os.environ["OUTBOX_TABLE"]
-EVENT_SOURCE = "smartretailx.catalogue"
+
+# Fallback source, used when an outbox record does not carry its own.
+#
+# The relay now serves more than one outbox (product catalogue and orders),
+# deployed as separate Lambdas from this same image with different
+# OUTBOX_TABLE values — the one-image-many-entrypoints pattern of ADR-024.
+#
+# The source string is NOT configuration on this Lambda, because ADR-021
+# says the source is part of the event contract and belongs to the
+# publisher. So the publisher writes `event_source` into its own outbox
+# record and the relay simply forwards it. This constant remains only for
+# records written before that field existed — every product outbox record
+# currently in DynamoDB — so the relay stays backward compatible without a
+# migration.
+DEFAULT_EVENT_SOURCE = "smartretailx.catalogue"
 TTL_DAYS = 7
 
 _deserializer = TypeDeserializer()
@@ -49,11 +63,12 @@ def handler(event, context):
         event_id = item["event_id"]
         event_type = item["event_type"]
         payload = item["payload"]
+        event_source = item.get("event_source", DEFAULT_EVENT_SOURCE)
 
         _events.put_events(
             Entries=[{
                 "EventBusName": EVENT_BUS_NAME,
-                "Source": EVENT_SOURCE,
+                "Source": event_source,
                 "DetailType": event_type,
                 "Detail": payload,
             }]

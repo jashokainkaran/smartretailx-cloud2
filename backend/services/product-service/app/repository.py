@@ -176,3 +176,59 @@ def list_products(limit: int = 20, cursor: str | None = None, include_inactive: 
         next_cursor = base64.urlsafe_b64encode(json.dumps(last_key).encode()).decode()
 
     return items, next_cursor
+
+def batch_get_products(product_ids: list[str]) -> list[Product]:
+    """
+    Fetch many products in a single round trip, for the Order saga's price
+    lookup.
+
+    The saga must never trust a client-supplied price, so it has to resolve
+    every basket line against the catalogue before it can compute a total.
+    Doing that one GET at a time costs one network round trip per line —
+    and, on Lambda, bills the caller for the time it spends waiting on each
+    one. BatchGetItem collapses that into a single request.
+
+    Three constraints of BatchGetItem drive this implementation:
+
+    1. Duplicate keys in one request raise ValidationException, so the ids
+       are de-duplicated first. dict.fromkeys is used rather than set()
+       because it preserves order, which keeps behaviour deterministic and
+       the tests readable. This is the same class of bug as duplicate
+       product lines in the Inventory reserve transaction.
+
+    2. A maximum of 100 keys per request. Enforced by ProductBatchRequest
+       at the API boundary so the caller gets a clear 422 rather than a
+       DynamoDB error.
+
+    3. A response may include UnprocessedKeys — DynamoDB is allowed to
+       return only part of what was asked for, if the request exceeds
+       throughput or size limits. Those keys are NOT an error and are NOT
+       retried automatically by boto3's resource-level batch_get_item; the
+       caller must resubmit them. The loop below does that. Ignoring this
+       would produce a rare, load-dependent bug where a basket silently
+       loses a line, which is exactly the kind of failure that never shows
+       up in testing.
+
+    Missing products are simply absent from the result. Deciding what that
+    means is the caller's job, not the catalogue's: the saga rejects the
+    order, because a basket referencing a product that does not exist
+    cannot be priced.
+    """
+    unique_ids = list(dict.fromkeys(product_ids))
+    if not unique_ids:
+        return []
+
+    found = []
+    remaining = [{"id": product_id} for product_id in unique_ids]
+
+    while remaining:
+        response = dynamodb.batch_get_item(
+            RequestItems={config.PRODUCTS_TABLE: {"Keys": remaining}}
+        )
+        for item in response["Responses"].get(config.PRODUCTS_TABLE, []):
+            found.append(Product(**item))
+
+        unprocessed = response.get("UnprocessedKeys", {}).get(config.PRODUCTS_TABLE, {})
+        remaining = unprocessed.get("Keys", [])
+
+    return found

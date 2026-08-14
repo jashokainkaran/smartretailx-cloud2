@@ -40,3 +40,7 @@ output "payments_table_name" {
 output "orders_table_name" {
   value = aws_dynamodb_table.orders.name
 }
+
+output "order_outbox_table_name" {
+  value = aws_dynamodb_table.order_outbox.name
+}

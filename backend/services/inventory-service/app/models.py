@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # An inventory record tracks stock in TWO states:
@@ -10,3 +10,8 @@ class InventoryItem(BaseModel):
     product_id: str
     available_quantity: int
     reserved_quantity: int = 0
+
+class StockOperation(BaseModel):
+    """One line of a batch reserve / release / confirm."""
+    product_id: str
+    quantity: int = Field(..., gt=0)

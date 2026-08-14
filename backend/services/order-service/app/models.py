@@ -82,8 +82,14 @@ class Order(BaseModel):
     created_at: str
     updated_at: str
 
-    # NOTE: saga_status is NOT on this model. It is a storage-level
+    # NOTE (see below): saga_status is NOT on this model. It is a storage-level
     # attribute that exists only to drive the sparse saga-status GSI, and
     # it is REMOVEd when an order reaches a healthy terminal state. It is
     # an index key, not part of the API contract, so it is not exposed to
     # clients — status already tells them everything they need.
+
+
+class OrderPage(BaseModel):
+    """The shape returned by the paginated list endpoint, mirroring ProductPage."""
+    items: list[Order]
+    next_cursor: Optional[str] = None

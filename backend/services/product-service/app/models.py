@@ -39,3 +39,13 @@ class Product(ProductBase):
 class ProductPage(BaseModel):
     items: list[Product]
     next_cursor: Optional[str] = None
+
+
+# Request body for the batch lookup used by the Order saga to resolve prices.
+#
+# max_length=100 is DynamoDB's BatchGetItem limit: 100 keys per request.
+# The Order service caps a basket at 100 line items for the same underlying
+# reason (its reserve transaction has a 100-operation limit), so the two
+# ceilings line up rather than one silently truncating the other.
+class ProductBatchRequest(BaseModel):
+    product_ids: list[str] = Field(..., min_length=1, max_length=100)
