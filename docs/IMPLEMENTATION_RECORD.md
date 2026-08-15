@@ -898,6 +898,198 @@ apply it is not.
   `pending-index` — `saga_status` is removed on reaching a healthy terminal state, so the
   index contains only in-flight orders and those requiring manual reconciliation.
 
+**`vpc.tf` — the network:**
+
+Address plan, `10.0.0.0/16`:
+
+| Subnet | CIDR | AZ | Tier | What runs there |
+|---|---|---|---|---|
+| `smartretailx-dev-private-app-eu-west-1a` | `10.0.1.0/24` | eu-west-1a | private | Lambda ENIs |
+| `smartretailx-dev-private-app-eu-west-1b` | `10.0.2.0/24` | eu-west-1b | private | Lambda ENIs |
+| `smartretailx-dev-public-web-eu-west-1a` | `10.0.101.0/24` | eu-west-1a | public | ALB tier (ECS target state) — created, unused |
+| `smartretailx-dev-public-web-eu-west-1b` | `10.0.102.0/24` | eu-west-1b | public | ALB tier — created, unused |
+| *(reserved)* | `10.0.201.0/24`, `10.0.202.0/24` | — | isolated | A relational data tier, if one is ever introduced. Not created: DynamoDB is managed and has no VPC presence. |
+
+The third octet identifies the tier and the last pair maps to the AZ index,
+so `10.0.1.x` and `10.0.101.x` are always the same availability zone.
+
+AZ names are constructed directly from `var.aws_region` (`"${var.aws_region}a"`,
+`"${var.aws_region}b"`) rather than resolved via a `data.aws_availability_zones`
+lookup. Every standard AWS region follows the `<region>a`/`<region>b` suffix
+convention, so this needs no per-region logic: pointing `var.aws_region` at
+`ap-south-1` for the CP-031 DR run produces `ap-south-1a`/`1b` with no other
+file changing. The trade-off, accepted deliberately: a data-source lookup
+would additionally confirm those specific AZs are actually available for the
+account before planning, which direct string construction does not.
+
+**Routing.** `public-web-rt` has a default route to an internet gateway.
+`private-app-rt` has **no default route at all** — only the VPC-local route
+and the DynamoDB gateway endpoint. There is no NAT gateway anywhere in the
+configuration.
+
+That absence is the design, not a cost compromise. Every destination the
+application talks to is an AWS service; a NAT gateway would route that
+traffic onto the public internet and straight back in at roughly £30/month
+for no gain. VPC endpoints keep it on the AWS backbone, and an attacker
+achieving code execution inside a Lambda has no egress path at all — no
+route to a command-and-control host and none to exfiltrate over. This is the
+concrete form of the Zero Trust argument rather than an assertion of it.
+
+**VPC endpoints.**
+- `dynamodb` — Gateway type, attached to the private route table. Free;
+  implemented as a route-table entry rather than an ENI, which is why it
+  binds to a route table and not to a subnet or security group.
+- `events` — Interface type, one ENI per private subnet, `private_dns_enabled`.
+  The two outbox relays publish to EventBridge through it.
+
+Deliberately absent, each for a specific reason:
+- **SQS** — the inventory consumer is *triggered* by SQS but never calls it.
+  The Lambda service polls the queue from outside the VPC and invokes the
+  function with the messages already in hand.
+- **execute-api** — drafted, then removed on checking the constraint. An
+  `execute-api` interface endpoint with private DNS serves **private REST
+  APIs only**, and API Gateway HTTP APIs cannot be private at all. Enabling
+  it would have made the public gateway *unreachable* from the VPC rather
+  than reachable. This is why the Order function is the one Lambda left
+  outside the VPC (below).
+- **CloudWatch Logs** — not required. A function's log output is collected
+  by the Lambda service outside the customer VPC, not written over its ENI.
+
+**Lambda placement.** Six of the seven functions run in the private subnets:
+`product-api`, `inventory-api`, `payment-api`, `inventory-consumer`,
+`outbox-relay`, `order-outbox-relay`. `order-api` is deliberately outside.
+Its saga calls Inventory and Payment through the public API Gateway URL, and
+with no `execute-api` endpoint available that would require a NAT gateway
+purely to leave AWS and come straight back. Rejected alternatives are
+recorded in `lambda_http_services.tf`: a NAT gateway (cost, and it
+reintroduces the egress path the design removes), a private REST API (the
+frontend could no longer reach it), and direct `lambda:InvokeFunction`
+(abandons the local/deployed parity the public-URL decision was made for).
+The residual risk is bounded and stated: one function has internet egress
+where six have none; it holds no credentials and its role reaches only the
+orders tables.
+
+Both private subnets carry a `Services` tag listing exactly what runs
+there — the same six function names above — and both public subnets carry
+`Services = "reserved-ecs-fargate-alb"`. This is documentation, not network
+segmentation: all six in-VPC Lambdas share this one tier and its one
+security group; they're isolated from each other by IAM role and
+DynamoDB table (database-per-service), not by subnet boundary. The tag
+exists so the subnet is self-documenting about its occupants without
+implying a per-service network split that doesn't exist.
+
+**Security groups.** `lambda-sg` has **no ingress rule at all** — nothing
+connects to a Lambda over the network, since API Gateway and SQS invoke it
+through the Lambda service. Egress is 443 only, to two destinations: the VPC
+CIDR for the interface endpoints, and the `com.amazonaws.eu-west-1.dynamodb`
+managed prefix list.
+
+That second rule was a bug caught before deployment and is worth recording,
+because it is counter-intuitive: a gateway endpoint changes the **route**,
+not the destination address. Traffic to DynamoDB is still addressed to
+DynamoDB's public IP range, so an egress rule allowing only `10.0.0.0/16`
+looks tighter and silently blocks every database call in the system.
+Security groups can reference managed prefix lists (network ACLs cannot),
+so the rule is scoped to DynamoDB's published ranges rather than opened to
+`0.0.0.0/0`.
+
+`vpc-endpoints-sg` admits 443 from `lambda-sg` **by security group ID**, not
+by CIDR — a CIDR rule would admit anything that happened to hold an address
+in range, whereas a group reference admits only resources actually carrying
+that group.
+
+**Network ACLs.** A stateless second layer at the subnet boundary, beneath
+the stateful security groups. Because they are stateless, return traffic is
+not implied: each allowed outbound connection needs a matching inbound rule
+for the ephemeral range 1024–65535. The private ACL allows 443 outbound to
+`0.0.0.0/0` for the same gateway-endpoint addressing reason above — ACLs
+cannot reference prefix lists — but denies every other port and protocol,
+and permits no inbound connection on any management port from anywhere.
+
+**Flow logs.** All traffic, to a CloudWatch log group with 14-day retention.
+The IAM role's trust policy names `vpc-flow-logs.amazonaws.com`; a
+`lambda.amazonaws.com` trust policy here fails silently, creating the flow
+log and never delivering a record. Beyond detection, this is what converts
+the no-egress claim into evidence: logs showing only endpoint traffic and no
+attempts at a public destination prove the design, where a route table with
+something missing from it merely argues for it.
+
+**Deployed identifiers (`eu-west-1`, `dev`, account `194680606132`, applied
+2026-08-15).** The network is not just written — it now exists. Real
+AWS-assigned IDs, not Terraform resource names:
+
+| Resource | Name | ID / ARN |
+|---|---|---|
+| VPC | `smartretailx-dev-vpc` | `vpc-0c0948833aab4bc70` |
+| Private subnet (`eu-west-1a`) | `smartretailx-dev-private-app-eu-west-1a` | `subnet-0132e39cf49cfeb9b` |
+| Private subnet (`eu-west-1b`) | `smartretailx-dev-private-app-eu-west-1b` | `subnet-051b44bf6ccaa65d3` |
+| Public subnet (`eu-west-1a`) | `smartretailx-dev-public-web-eu-west-1a` | `subnet-01c721f7c3d4002d3` |
+| Public subnet (`eu-west-1b`) | `smartretailx-dev-public-web-eu-west-1b` | `subnet-0ff06dade5d6c7e53` |
+| Internet gateway | `smartretailx-dev-igw` | `igw-016377aec6d3b1799` |
+| Private route table | `smartretailx-dev-private-app-rt` | `rtb-070076d3c5dcd8534` |
+| Public route table | `smartretailx-dev-public-web-rt` | `rtb-03442c6549af18da4` |
+| Lambda security group | `smartretailx-dev-lambda-sg` | `sg-0e72a9f72d6c06ddc` |
+| Endpoint security group | `smartretailx-dev-vpc-endpoints-sg` | `sg-0dd51ba614419827a` |
+| Private NACL | `smartretailx-dev-private-app-nacl` | `acl-0f4cdf5159a184ca8` |
+| Public NACL | `smartretailx-dev-public-web-nacl` | `acl-058670b1f82f184b4` |
+| DynamoDB endpoint (Gateway) | `smartretailx-dev-dynamodb-endpoint` | `vpce-0ab56fe1724f5be0a` |
+| EventBridge endpoint (Interface) | `smartretailx-dev-events-endpoint` | `vpce-0ccda29180db51864` |
+| WAF web ACL | `smartretailx-dev-web-acl` | `1697c0df-80b9-47cc-adc0-4c6b948663d5` |
+
+(IP ranges for each subnet are in the address-plan table above — `10.0.1.0/24`
+through `10.0.102.0/24`.)
+
+The six in-VPC Lambdas' `vpc_config` attachment and the CloudFront/S3 frontend
+hosting stack below both showed as pending in the `terraform plan` run
+immediately after the network was created (§7, Problem 10) and required a
+second apply. As of that second apply, `terraform plan` returns **`No
+changes. Your infrastructure matches the configuration.`** — confirmed via
+`terraform state show` on `product-api`, `inventory-api`, and `payment-api`,
+each carrying a `vpc_config` block with `security_group_ids =
+["sg-0e72a9f72d6c06ddc"]` and both private subnet IDs; `order-api` correctly
+carries none.
+
+**`hosting.tf` — the public edge:**
+
+One CloudFront distribution serves both the React build and the API:
+`/*` to a private S3 bucket via Origin Access Control, `/api/*` to API
+Gateway. Routing the API through the same distribution eliminates CORS
+entirely (one origin), and is the only way to attach a WAF at all — WAFv2
+supports CloudFront, ALB and REST APIs, but **not** API Gateway HTTP APIs.
+
+- **S3** — public access blocked four ways, versioned, SSE enabled. Static
+  website hosting deliberately not used: it requires a publicly readable
+  bucket and serves plain HTTP.
+- **Origin Access Control**, not the legacy Origin Access Identity. The
+  bucket policy grants read to the CloudFront service principal narrowed by
+  `AWS:SourceArn` to this one distribution — without that condition, any
+  distribution in any AWS account could read the bucket.
+- **`/api/*` behaviour** uses the managed *CachingDisabled* cache policy and
+  the *AllViewerExceptHostHeader* origin request policy. The latter is
+  essential: forwarding the `Host` header makes API Gateway see the
+  CloudFront hostname, match no API, and reject every request.
+- **403 and 404 both rewrite** to `/index.html` with status 200, for
+  client-side routing. Handling only 404 leaves the SPA broken on refresh,
+  because a private bucket returns 403 for a missing object.
+- **WAF** in `us-east-1` with `scope = CLOUDFRONT` — a web ACL for a
+  distribution is not a regional resource. Common rule set, known-bad-inputs
+  rule set, and a per-IP rate limit of 2000. The rate limit matters
+  particularly here: each checkout attempt makes three downstream calls and
+  several conditional writes, and holds stock in a reservation, so
+  unthrottled traffic costs money *and* makes the catalogue unbuyable.
+- **PriceClass_100** (North America and Europe edges only) — named
+  explicitly so it reads as a cost decision rather than a default (ADR-012).
+
+**Deployed identifiers (`eu-west-1`, `dev`, applied 2026-08-15):** S3 bucket
+`smartretailx-dev-frontend-194680606132` (bucket name includes the account ID
+— see §7, Problem 11 for why a plain `smartretailx-dev-frontend` failed),
+CloudFront distribution `E22UOLCAMETWJ`, served at
+`https://d1vxg10hlsklfv.cloudfront.net`, Origin Access Control `ENKQ6F587SD9Q`,
+WAF web ACL `smartretailx-dev-web-acl`
+(`arn:aws:wafv2:us-east-1:194680606132:global/webacl/smartretailx-dev-web-acl/1697c0df-80b9-47cc-adc0-4c6b948663d5`,
+attached — `us-east-1` because a CloudFront-scope web ACL is always created
+there regardless of the distribution's own region).
+
 **`ecr.tf`:**
 - `aws_ecr_repository.product_service`, `aws_ecr_repository.outbox_relay` — both
   `image_tag_mutability = "MUTABLE"` (ADR-027: correct tagging discipline would use immutable,
@@ -1281,6 +1473,68 @@ value of running the suites against DynamoDB Local rather than an in-process emu
 tests passed against an emulator, which did not reproduce DynamoDB's numeric normalisation; the
 choice of test double was itself load-bearing, and a green suite against the wrong double is
 weaker evidence than it appears.
+
+**10. A Lambda's `vpc_config` attachment did not appear in the same `terraform plan` that
+created the VPC it depends on.**
+*Symptom:* after adding `vpc.tf` and setting `in_vpc = true` on `product-api`, `inventory-api`,
+and `payment-api` (all three already deployed, previously with no VPC at all) plus the three
+Lambdas in `lambda_relay.tf`/`lambda_inventory_consumer.tf`/`order_outbox.tf`, the plan that
+created the VPC, subnets, and security groups reported `30 to add, 6 to change` — and none of
+the six Lambda functions were in either list, despite their config now specifying a
+`vpc_config` block that did not exist in state at all. The IAM permissions those same functions
+needed to join the VPC (`ec2:CreateNetworkInterface` etc., from `local.vpc_access_statement`)
+*did* show correctly as policy updates in that same plan. *Root cause:* `vpc_config`'s
+`subnet_ids` and `security_group_ids` reference `aws_subnet.private[*].id` and
+`aws_security_group.lambda.id` — resources being created in this same plan, so their values are
+unknown until apply actually runs. For this specific computed, optional nested block, Terraform's
+plan renderer does not surface the pending change while every value inside it is unknown; the
+IAM policy statement, by contrast, is fully computable at plan time (nothing inside it depends
+on a not-yet-created resource), so it shows normally. *Fix:* apply once to create the VPC and
+its dependencies, then run `plan`/`apply` a second time — with the subnet and security-group IDs
+now real and in state, the same `vpc_config` diff becomes visible and applies normally.
+*Illustrates:* the same structural class of problem as Problem 9 (the ECR-image/Lambda ordering
+issue), surfaced in a more dangerous form: not as an outright plan error, but as a silently
+incomplete plan. Nothing about a clean `apply` here indicates that a second one is still owed —
+this can only be caught by explicitly re-running `plan` and checking, which is why this record
+does it explicitly rather than trusting a single "no errors" apply.
+
+**11. The frontend S3 bucket name collided with a bucket owned by an unrelated AWS account.**
+*Symptom:* `terraform apply` failed creating `aws_s3_bucket.frontend` with `BucketAlreadyExists`
+(HTTP 409) on the name `smartretailx-dev-frontend`. *Root cause:* S3 bucket names are a single
+namespace shared across every AWS account globally, not scoped per-account — unlike almost every
+other resource type Terraform manages here. `${local.prefix}-frontend` is a short, predictable
+name with nothing account-specific in it, and some other, entirely unrelated AWS account already
+held it. (`BucketAlreadyExists` specifically indicates another account owns it;
+`BucketAlreadyOwnedByYou` would have indicated a collision with this same account instead.)
+*Fix:* added `data "aws_caller_identity" "current" {}` and renamed the bucket to
+`"${local.prefix}-frontend-${data.aws_caller_identity.current.account_id}"` —
+`smartretailx-dev-frontend-194680606132`. Every other resource in `hosting.tf` already referenced
+the bucket via `aws_s3_bucket.frontend.id`/`.arn`/`.bucket_regional_domain_name` rather than the
+literal string, so nothing else needed to change. *Illustrates:* a resource-naming assumption
+(project+environment prefix is sufficient) that holds for every other AWS resource type in this
+configuration and silently breaks for the one type with a global rather than per-account
+namespace — worth checking for explicitly rather than assuming uniform naming rules across
+resource types.
+
+**12. `viewer_certificate.minimum_protocol_version` caused a perpetual apply/plan drift loop.**
+*Symptom:* `terraform plan`, run again immediately after a clean apply with no configuration
+changes in between, kept reporting `aws_cloudfront_distribution.main` as needing an update —
+indefinitely, on every subsequent plan. *Root cause:* `hosting.tf` set
+`cloudfront_default_certificate = true` (the default `*.cloudfront.net` certificate — a custom
+domain is deferred to CP-030) alongside `minimum_protocol_version = "TLSv1.2_2021"`. AWS only
+honours a custom minimum TLS version when the distribution uses a custom ACM certificate; with
+the default certificate, it silently forces `TLSv1` server-side regardless of what Terraform
+sends, and does not error when a different value is submitted. Each apply pushed
+`TLSv1.2_2021`, AWS silently reverted it to `TLSv1`, and the next plan saw a genuine diff between
+config and real state and proposed pushing `TLSv1.2_2021` again — a stable two-state
+oscillation, not a transient issue. *Fix:* removed `minimum_protocol_version` from the
+`viewer_certificate` block entirely, letting it default to what AWS was already enforcing.
+Confirmed with `terraform plan` returning `No changes. Your infrastructure matches the
+configuration.` immediately afterward. *Illustrates:* not every value AWS's API accepts is a
+value AWS's API will actually keep — some fields are conditionally enforced based on a sibling
+field's value, and the API stays silent about the substitution rather than rejecting the
+combination outright. A single successful `apply` does not prove a configuration is stable;
+only a second `plan` with zero changes does.
 
 ---
 

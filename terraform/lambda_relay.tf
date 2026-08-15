@@ -51,6 +51,8 @@ resource "aws_iam_role_policy" "outbox_relay" {
         Action   = "events:PutEvents"
         Resource = aws_cloudwatch_event_bus.main.arn
       },
+      local.xray_statement,
+      local.vpc_access_statement,
     ]
   })
 }
@@ -71,6 +73,22 @@ resource "aws_lambda_function" "outbox_relay" {
       EVENT_BUS_NAME = aws_cloudwatch_event_bus.main.name
       OUTBOX_TABLE   = aws_dynamodb_table.product_outbox.name
     }
+  }
+
+  # Private subnets, no internet route. This relay reaches EventBridge
+  # through the events interface endpoint; DynamoDB through the free
+  # gateway endpoint. Nothing else is reachable from here.
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
+  # Without this the X-Ray trace of a checkout stops at the synchronous
+  # boundary: order-api to inventory-api to payment-api would be visible,
+  # and the event publish that follows would not. Tracing the asynchronous
+  # half is the point, since that is where the architecture actually is.
+  tracing_config {
+    mode = "Active"
   }
 }
 

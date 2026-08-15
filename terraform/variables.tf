@@ -15,6 +15,12 @@ variable "project_name" {
   default     = "smartretailx"
 }
 
+variable "frontend_origin" {
+  description = "Origin allowed to call the APIs from a browser. Set to the CloudFront domain once the frontend is deployed; localhost during development. Not '*', because every service sends allow_credentials, and a wildcard origin with credentials is rejected by browsers."
+  type        = string
+  default     = "http://localhost:5173"
+}
+
 variable "dlq_max_receive_count" {
   description = "Failed processing attempts before a message moves to the DLQ"
   type        = number

@@ -44,3 +44,57 @@ output "orders_table_name" {
 output "order_outbox_table_name" {
   value = aws_dynamodb_table.order_outbox.name
 }
+
+# The single base URL for the frontend, and the value the Order saga uses to
+# reach the other services.
+output "api_base_url" {
+  value = aws_apigatewayv2_api.main.api_endpoint
+}
+
+output "vpc_id" {
+  value = aws_vpc.main.id
+}
+
+# The single public entry point: serves the React build at / and proxies
+# the API at /api/*, so the frontend needs no separate API host and no CORS.
+output "site_url" {
+  value = "https://${aws_cloudfront_distribution.main.domain_name}"
+}
+
+output "frontend_bucket" {
+  value = aws_s3_bucket.frontend.bucket
+}
+
+output "waf_web_acl_arn" {
+  value = aws_wafv2_web_acl.main.arn
+}
+
+output "private_subnet_ids" {
+  value = aws_subnet.private[*].id
+}
+
+output "vpc_endpoints" {
+  description = "Gateway endpoints are free; interface endpoints are billed hourly per AZ."
+  value = {
+    dynamodb_gateway = aws_vpc_endpoint.dynamodb.id
+    interface        = { for k, v in aws_vpc_endpoint.interface : k => v.id }
+  }
+}
+
+output "ecr_inventory_service_url" {
+  value = aws_ecr_repository.inventory_service.repository_url
+}
+
+output "ecr_payment_service_url" {
+  value = aws_ecr_repository.payment_service.repository_url
+}
+
+output "ecr_order_service_url" {
+  value = aws_ecr_repository.order_service.repository_url
+}
+
+# Function names, so the three-step image deploy can be scripted rather than
+# retyped (ADR-027: mutable tags mean Terraform cannot see a new push).
+output "http_service_function_names" {
+  value = { for k, v in aws_lambda_function.http_service : k => v.function_name }
+}

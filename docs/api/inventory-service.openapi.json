@@ -1,0 +1,491 @@
+﻿{
+    "openapi":  "3.1.0",
+    "info":  {
+                 "title":  "SmartRetailX - Inventory Service",
+                 "description":  "Inventory service with stock reservation and oversell prevention",
+                 "version":  "1.0.0"
+             },
+    "paths":  {
+                  "/health":  {
+                                  "get":  {
+                                              "summary":  "Health",
+                                              "description":  "Health check endpoint.",
+                                              "operationId":  "health_health_get",
+                                              "responses":  {
+                                                                "200":  {
+                                                                            "description":  "Successful Response",
+                                                                            "content":  {
+                                                                                            "application/json":  {
+                                                                                                                     "schema":  {
+
+                                                                                                                                }
+                                                                                                                 }
+                                                                                        }
+                                                                        }
+                                                            }
+                                          }
+                              },
+                  "/api/v1/inventory/{product_id}":  {
+                                                         "get":  {
+                                                                     "summary":  "Get Stock",
+                                                                     "description":  "Get the current stock level for a product.",
+                                                                     "operationId":  "get_stock_api_v1_inventory__product_id__get",
+                                                                     "parameters":  [
+                                                                                        {
+                                                                                            "name":  "product_id",
+                                                                                            "in":  "path",
+                                                                                            "required":  true,
+                                                                                            "schema":  {
+                                                                                                           "type":  "string",
+                                                                                                           "title":  "Product Id"
+                                                                                                       }
+                                                                                        }
+                                                                                    ],
+                                                                     "responses":  {
+                                                                                       "200":  {
+                                                                                                   "description":  "Successful Response",
+                                                                                                   "content":  {
+                                                                                                                   "application/json":  {
+                                                                                                                                            "schema":  {
+                                                                                                                                                           "$ref":  "#/components/schemas/InventoryItem"
+                                                                                                                                                       }
+                                                                                                                                        }
+                                                                                                               }
+                                                                                               },
+                                                                                       "422":  {
+                                                                                                   "description":  "Validation Error",
+                                                                                                   "content":  {
+                                                                                                                   "application/json":  {
+                                                                                                                                            "schema":  {
+                                                                                                                                                           "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                       }
+                                                                                                                                        }
+                                                                                                               }
+                                                                                               }
+                                                                                   }
+                                                                 }
+                                                     },
+                  "/api/v1/inventory/{product_id}/reserve":  {
+                                                                 "post":  {
+                                                                              "summary":  "Reserve Stock",
+                                                                              "description":  "Reserve stock for a product. Returns 409 if insufficient stock.",
+                                                                              "operationId":  "reserve_stock_api_v1_inventory__product_id__reserve_post",
+                                                                              "parameters":  [
+                                                                                                 {
+                                                                                                     "name":  "product_id",
+                                                                                                     "in":  "path",
+                                                                                                     "required":  true,
+                                                                                                     "schema":  {
+                                                                                                                    "type":  "string",
+                                                                                                                    "title":  "Product Id"
+                                                                                                                }
+                                                                                                 },
+                                                                                                 {
+                                                                                                     "name":  "quantity",
+                                                                                                     "in":  "query",
+                                                                                                     "required":  true,
+                                                                                                     "schema":  {
+                                                                                                                    "type":  "integer",
+                                                                                                                    "title":  "Quantity"
+                                                                                                                }
+                                                                                                 }
+                                                                                             ],
+                                                                              "responses":  {
+                                                                                                "200":  {
+                                                                                                            "description":  "Successful Response",
+                                                                                                            "content":  {
+                                                                                                                            "application/json":  {
+                                                                                                                                                     "schema":  {
+
+                                                                                                                                                                }
+                                                                                                                                                 }
+                                                                                                                        }
+                                                                                                        },
+                                                                                                "422":  {
+                                                                                                            "description":  "Validation Error",
+                                                                                                            "content":  {
+                                                                                                                            "application/json":  {
+                                                                                                                                                     "schema":  {
+                                                                                                                                                                    "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                                }
+                                                                                                                                                 }
+                                                                                                                        }
+                                                                                                        }
+                                                                                            }
+                                                                          }
+                                                             },
+                  "/api/v1/inventory/{product_id}/release":  {
+                                                                 "post":  {
+                                                                              "summary":  "Release Stock",
+                                                                              "description":  "Release previously reserved stock for a product.",
+                                                                              "operationId":  "release_stock_api_v1_inventory__product_id__release_post",
+                                                                              "parameters":  [
+                                                                                                 {
+                                                                                                     "name":  "product_id",
+                                                                                                     "in":  "path",
+                                                                                                     "required":  true,
+                                                                                                     "schema":  {
+                                                                                                                    "type":  "string",
+                                                                                                                    "title":  "Product Id"
+                                                                                                                }
+                                                                                                 },
+                                                                                                 {
+                                                                                                     "name":  "quantity",
+                                                                                                     "in":  "query",
+                                                                                                     "required":  true,
+                                                                                                     "schema":  {
+                                                                                                                    "type":  "integer",
+                                                                                                                    "title":  "Quantity"
+                                                                                                                }
+                                                                                                 }
+                                                                                             ],
+                                                                              "responses":  {
+                                                                                                "200":  {
+                                                                                                            "description":  "Successful Response",
+                                                                                                            "content":  {
+                                                                                                                            "application/json":  {
+                                                                                                                                                     "schema":  {
+
+                                                                                                                                                                }
+                                                                                                                                                 }
+                                                                                                                        }
+                                                                                                        },
+                                                                                                "422":  {
+                                                                                                            "description":  "Validation Error",
+                                                                                                            "content":  {
+                                                                                                                            "application/json":  {
+                                                                                                                                                     "schema":  {
+                                                                                                                                                                    "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                                }
+                                                                                                                                                 }
+                                                                                                                        }
+                                                                                                        }
+                                                                                            }
+                                                                          }
+                                                             },
+                  "/api/v1/inventory/{product_id}/confirm":  {
+                                                                 "post":  {
+                                                                              "summary":  "Confirm Stock",
+                                                                              "description":  "Confirm a sale â permanently remove reserved stock (payment succeeded).",
+                                                                              "operationId":  "confirm_stock_api_v1_inventory__product_id__confirm_post",
+                                                                              "parameters":  [
+                                                                                                 {
+                                                                                                     "name":  "product_id",
+                                                                                                     "in":  "path",
+                                                                                                     "required":  true,
+                                                                                                     "schema":  {
+                                                                                                                    "type":  "string",
+                                                                                                                    "title":  "Product Id"
+                                                                                                                }
+                                                                                                 },
+                                                                                                 {
+                                                                                                     "name":  "quantity",
+                                                                                                     "in":  "query",
+                                                                                                     "required":  true,
+                                                                                                     "schema":  {
+                                                                                                                    "type":  "integer",
+                                                                                                                    "title":  "Quantity"
+                                                                                                                }
+                                                                                                 }
+                                                                                             ],
+                                                                              "responses":  {
+                                                                                                "200":  {
+                                                                                                            "description":  "Successful Response",
+                                                                                                            "content":  {
+                                                                                                                            "application/json":  {
+                                                                                                                                                     "schema":  {
+
+                                                                                                                                                                }
+                                                                                                                                                 }
+                                                                                                                        }
+                                                                                                        },
+                                                                                                "422":  {
+                                                                                                            "description":  "Validation Error",
+                                                                                                            "content":  {
+                                                                                                                            "application/json":  {
+                                                                                                                                                     "schema":  {
+                                                                                                                                                                    "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                                }
+                                                                                                                                                 }
+                                                                                                                        }
+                                                                                                        }
+                                                                                            }
+                                                                          }
+                                                             },
+                  "/api/v1/inventory/{product_id}/add":  {
+                                                             "post":  {
+                                                                          "summary":  "Add Stock",
+                                                                          "description":  "Add stock (restock or create initial record).",
+                                                                          "operationId":  "add_stock_api_v1_inventory__product_id__add_post",
+                                                                          "parameters":  [
+                                                                                             {
+                                                                                                 "name":  "product_id",
+                                                                                                 "in":  "path",
+                                                                                                 "required":  true,
+                                                                                                 "schema":  {
+                                                                                                                "type":  "string",
+                                                                                                                "title":  "Product Id"
+                                                                                                            }
+                                                                                             },
+                                                                                             {
+                                                                                                 "name":  "quantity",
+                                                                                                 "in":  "query",
+                                                                                                 "required":  true,
+                                                                                                 "schema":  {
+                                                                                                                "type":  "integer",
+                                                                                                                "title":  "Quantity"
+                                                                                                            }
+                                                                                             }
+                                                                                         ],
+                                                                          "responses":  {
+                                                                                            "200":  {
+                                                                                                        "description":  "Successful Response",
+                                                                                                        "content":  {
+                                                                                                                        "application/json":  {
+                                                                                                                                                 "schema":  {
+
+                                                                                                                                                            }
+                                                                                                                                             }
+                                                                                                                    }
+                                                                                                    },
+                                                                                            "422":  {
+                                                                                                        "description":  "Validation Error",
+                                                                                                        "content":  {
+                                                                                                                        "application/json":  {
+                                                                                                                                                 "schema":  {
+                                                                                                                                                                "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                            }
+                                                                                                                                             }
+                                                                                                                    }
+                                                                                                    }
+                                                                                        }
+                                                                      }
+                                                         },
+                  "/api/v1/inventory/reserve":  {
+                                                    "post":  {
+                                                                 "summary":  "Reserve Batch",
+                                                                 "operationId":  "reserve_batch_api_v1_inventory_reserve_post",
+                                                                 "requestBody":  {
+                                                                                     "content":  {
+                                                                                                     "application/json":  {
+                                                                                                                              "schema":  {
+                                                                                                                                             "items":  {
+                                                                                                                                                           "$ref":  "#/components/schemas/StockOperation"
+                                                                                                                                                       },
+                                                                                                                                             "type":  "array",
+                                                                                                                                             "title":  "Items"
+                                                                                                                                         }
+                                                                                                                          }
+                                                                                                 },
+                                                                                     "required":  true
+                                                                                 },
+                                                                 "responses":  {
+                                                                                   "200":  {
+                                                                                               "description":  "Successful Response",
+                                                                                               "content":  {
+                                                                                                               "application/json":  {
+                                                                                                                                        "schema":  {
+
+                                                                                                                                                   }
+                                                                                                                                    }
+                                                                                                           }
+                                                                                           },
+                                                                                   "422":  {
+                                                                                               "description":  "Validation Error",
+                                                                                               "content":  {
+                                                                                                               "application/json":  {
+                                                                                                                                        "schema":  {
+                                                                                                                                                       "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                   }
+                                                                                                                                    }
+                                                                                                           }
+                                                                                           }
+                                                                               }
+                                                             }
+                                                },
+                  "/api/v1/inventory/release":  {
+                                                    "post":  {
+                                                                 "summary":  "Release Batch",
+                                                                 "operationId":  "release_batch_api_v1_inventory_release_post",
+                                                                 "requestBody":  {
+                                                                                     "content":  {
+                                                                                                     "application/json":  {
+                                                                                                                              "schema":  {
+                                                                                                                                             "items":  {
+                                                                                                                                                           "$ref":  "#/components/schemas/StockOperation"
+                                                                                                                                                       },
+                                                                                                                                             "type":  "array",
+                                                                                                                                             "title":  "Items"
+                                                                                                                                         }
+                                                                                                                          }
+                                                                                                 },
+                                                                                     "required":  true
+                                                                                 },
+                                                                 "responses":  {
+                                                                                   "200":  {
+                                                                                               "description":  "Successful Response",
+                                                                                               "content":  {
+                                                                                                               "application/json":  {
+                                                                                                                                        "schema":  {
+
+                                                                                                                                                   }
+                                                                                                                                    }
+                                                                                                           }
+                                                                                           },
+                                                                                   "422":  {
+                                                                                               "description":  "Validation Error",
+                                                                                               "content":  {
+                                                                                                               "application/json":  {
+                                                                                                                                        "schema":  {
+                                                                                                                                                       "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                   }
+                                                                                                                                    }
+                                                                                                           }
+                                                                                           }
+                                                                               }
+                                                             }
+                                                },
+                  "/api/v1/inventory/confirm":  {
+                                                    "post":  {
+                                                                 "summary":  "Confirm Batch",
+                                                                 "operationId":  "confirm_batch_api_v1_inventory_confirm_post",
+                                                                 "requestBody":  {
+                                                                                     "content":  {
+                                                                                                     "application/json":  {
+                                                                                                                              "schema":  {
+                                                                                                                                             "items":  {
+                                                                                                                                                           "$ref":  "#/components/schemas/StockOperation"
+                                                                                                                                                       },
+                                                                                                                                             "type":  "array",
+                                                                                                                                             "title":  "Items"
+                                                                                                                                         }
+                                                                                                                          }
+                                                                                                 },
+                                                                                     "required":  true
+                                                                                 },
+                                                                 "responses":  {
+                                                                                   "200":  {
+                                                                                               "description":  "Successful Response",
+                                                                                               "content":  {
+                                                                                                               "application/json":  {
+                                                                                                                                        "schema":  {
+
+                                                                                                                                                   }
+                                                                                                                                    }
+                                                                                                           }
+                                                                                           },
+                                                                                   "422":  {
+                                                                                               "description":  "Validation Error",
+                                                                                               "content":  {
+                                                                                                               "application/json":  {
+                                                                                                                                        "schema":  {
+                                                                                                                                                       "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                   }
+                                                                                                                                    }
+                                                                                                           }
+                                                                                           }
+                                                                               }
+                                                             }
+                                                }
+              },
+    "components":  {
+                       "schemas":  {
+                                       "HTTPValidationError":  {
+                                                                   "properties":  {
+                                                                                      "detail":  {
+                                                                                                     "items":  {
+                                                                                                                   "$ref":  "#/components/schemas/ValidationError"
+                                                                                                               },
+                                                                                                     "type":  "array",
+                                                                                                     "title":  "Detail"
+                                                                                                 }
+                                                                                  },
+                                                                   "type":  "object",
+                                                                   "title":  "HTTPValidationError"
+                                                               },
+                                       "InventoryItem":  {
+                                                             "properties":  {
+                                                                                "product_id":  {
+                                                                                                   "type":  "string",
+                                                                                                   "title":  "Product Id"
+                                                                                               },
+                                                                                "available_quantity":  {
+                                                                                                           "type":  "integer",
+                                                                                                           "title":  "Available Quantity"
+                                                                                                       },
+                                                                                "reserved_quantity":  {
+                                                                                                          "type":  "integer",
+                                                                                                          "title":  "Reserved Quantity",
+                                                                                                          "default":  0
+                                                                                                      }
+                                                                            },
+                                                             "type":  "object",
+                                                             "required":  [
+                                                                              "product_id",
+                                                                              "available_quantity"
+                                                                          ],
+                                                             "title":  "InventoryItem"
+                                                         },
+                                       "StockOperation":  {
+                                                              "properties":  {
+                                                                                 "product_id":  {
+                                                                                                    "type":  "string",
+                                                                                                    "title":  "Product Id"
+                                                                                                },
+                                                                                 "quantity":  {
+                                                                                                  "type":  "integer",
+                                                                                                  "exclusiveMinimum":  0.0,
+                                                                                                  "title":  "Quantity"
+                                                                                              }
+                                                                             },
+                                                              "type":  "object",
+                                                              "required":  [
+                                                                               "product_id",
+                                                                               "quantity"
+                                                                           ],
+                                                              "title":  "StockOperation",
+                                                              "description":  "One line of a batch reserve / release / confirm."
+                                                          },
+                                       "ValidationError":  {
+                                                               "properties":  {
+                                                                                  "loc":  {
+                                                                                              "items":  {
+                                                                                                            "anyOf":  [
+                                                                                                                          {
+                                                                                                                              "type":  "string"
+                                                                                                                          },
+                                                                                                                          {
+                                                                                                                              "type":  "integer"
+                                                                                                                          }
+                                                                                                                      ]
+                                                                                                        },
+                                                                                              "type":  "array",
+                                                                                              "title":  "Location"
+                                                                                          },
+                                                                                  "msg":  {
+                                                                                              "type":  "string",
+                                                                                              "title":  "Message"
+                                                                                          },
+                                                                                  "type":  {
+                                                                                               "type":  "string",
+                                                                                               "title":  "Error Type"
+                                                                                           },
+                                                                                  "input":  {
+                                                                                                "title":  "Input"
+                                                                                            },
+                                                                                  "ctx":  {
+                                                                                              "type":  "object",
+                                                                                              "title":  "Context"
+                                                                                          }
+                                                                              },
+                                                               "type":  "object",
+                                                               "required":  [
+                                                                                "loc",
+                                                                                "msg",
+                                                                                "type"
+                                                                            ],
+                                                               "title":  "ValidationError"
+                                                           }
+                                   }
+                   }
+}

@@ -121,6 +121,8 @@ resource "aws_iam_role_policy" "order_outbox_relay" {
         Action   = "events:PutEvents"
         Resource = aws_cloudwatch_event_bus.main.arn
       },
+      local.xray_statement,
+      local.vpc_access_statement,
     ]
   })
 }
@@ -143,6 +145,19 @@ resource "aws_lambda_function" "order_outbox_relay" {
       EVENT_BUS_NAME = aws_cloudwatch_event_bus.main.name
       OUTBOX_TABLE   = aws_dynamodb_table.order_outbox.name
     }
+  }
+
+  # Private subnets, no internet route. The relays reach EventBridge through
+  # the events interface endpoint; the consumer reaches only DynamoDB, via
+  # the free gateway endpoint. Its SQS trigger needs no endpoint at all —
+  # the Lambda service polls the queue from outside the VPC.
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
+  tracing_config {
+    mode = "Active"
   }
 }
 

@@ -69,6 +69,8 @@ resource "aws_iam_role_policy" "inventory_consumer" {
         Action   = "dynamodb:PutItem"
         Resource = aws_dynamodb_table.inventory.arn
       },
+      local.xray_statement,
+      local.vpc_access_statement,
     ]
   })
 }
@@ -92,6 +94,19 @@ resource "aws_lambda_function" "inventory_consumer" {
     variables = {
       INVENTORY_TABLE = aws_dynamodb_table.inventory.name
     }
+  }
+
+  # Private subnets, no internet route. The relays reach EventBridge through
+  # the events interface endpoint; the consumer reaches only DynamoDB, via
+  # the free gateway endpoint. Its SQS trigger needs no endpoint at all —
+  # the Lambda service polls the queue from outside the VPC.
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
+  tracing_config {
+    mode = "Active"
   }
 }
 
