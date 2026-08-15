@@ -326,18 +326,33 @@ def test_reserve_timeout_records_stock_unknown(calls, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_declined_payment_releases_stock_and_fails(calls, monkeypatch):
+    """
+    The real Payment service's 402 body is the full Payment record, not a
+    {"detail": ...} envelope (clients.charge_payment's own docstring), so
+    exc.detail falls back to the raw response text rather than a clean
+    message. The mock's `detail` argument is deliberately the raw-JSON-shaped
+    value that fallback would actually produce, distinct from
+    failure_reason in `body` — this is what catches a saga that reads the
+    wrong field, which is exactly the bug this test previously missed by
+    using a body that happened not to include failure_reason at all.
+    """
     def charge(order_id, amount, payment_token):
         raise DownstreamRejected(
             402,
-            "Card declined by issuer",
-            {"payment_id": "pay-declined", "status": "FAILED"},
+            '{"payment_id": "pay-declined", "status": "FAILED", "failure_reason": "Card declined by issuer"}',
+            {
+                "payment_id": "pay-declined",
+                "status": "FAILED",
+                "failure_reason": "Card declined by issuer",
+            },
         )
 
     monkeypatch.setattr(clients, "charge_payment", charge)
 
     body = client.post("/api/v1/orders", json=basket()).json()
     assert body["status"] == states.FAILED
-    assert "declined" in body["failure_reason"].lower()
+    assert body["failure_reason"] == "Card declined by issuer"
+    assert "payment_id" not in body["failure_reason"]  # not the raw JSON blob
 
     # A 402 is a definite answer, so compensation is safe and required.
     assert calls.released == 1

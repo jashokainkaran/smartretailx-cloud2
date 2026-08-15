@@ -329,10 +329,15 @@ def run_checkout(request: OrderCreate):
     except DownstreamRejected as exc:
         # 402 — declined. The Payment service returns the full Payment
         # record on a decline rather than an error envelope, so payment_id
-        # is available even though nothing was charged.
+        # and failure_reason are both available even though nothing was
+        # charged. exc.detail falls back to the raw response text here (see
+        # clients._detail) because this response has no "detail" key — read
+        # failure_reason from .body instead, the same way payment_id already
+        # is, rather than storing the whole serialized Payment record.
         declined_payment_id = (exc.body or {}).get("payment_id")
+        declined_reason = (exc.body or {}).get("failure_reason") or str(exc.detail)
         return _compensate_release(
-            order_id, customer_id, line_items, str(exc.detail), declined_payment_id
+            order_id, customer_id, line_items, declined_reason, declined_payment_id
         )
     except DownstreamUnknown as exc:
         return _payment_unknown(order_id, str(exc))
