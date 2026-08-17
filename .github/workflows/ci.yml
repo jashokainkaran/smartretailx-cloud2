@@ -188,4 +188,10 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
-          npm audit --audit-level=high
+          # --omit=dev: audit only what actually ships in the production
+          # build (dist/), not build-time tooling like vite/esbuild that
+          # never reaches a deployed bundle. A vulnerability in a dev
+          # server that only runs on a developer's own machine is not the
+          # same risk as one in code served to real users, and gating CI
+          # on the former produces noise, not signal.
+          npm audit --omit=dev --audit-level=high
