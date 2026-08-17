@@ -2145,3 +2145,111 @@ execute the *actions themselves* (`actions/checkout@v4`, `actions/setup-node@v4`
 separate from this project's own Node version, which the workflow explicitly pins to `22` and is
 unaffected. They will resolve on their own once the action authors publish new major versions
 built against the newer runtime.
+
+## Update — 2026-08-18: security integration testing (CP-035), and a critical self-review that
+caught real gaps before they were called finished
+
+**`tests/test_security.py` added to all four backend services — the first tests anywhere in this
+project to exercise the real claims-parsing path.** Every other test file runs with
+`AUTH_TEST_MODE` on, which makes `claims_from_request()` short-circuit to a hardcoded Python dict
+and never touch its real branch at all — the exact reason the systemic `cognito:groups`
+bracket-parsing bug shipped undetected. These tests call the real Mangum-wrapped `handler` directly
+with a hand-built event dict (the same shape API Gateway's HTTP API actually sends — `requestId`,
+`sourceIp`, `authorizer.jwt.claims`, all of it), and flip `AUTH_TEST_MODE` off per-test via
+`monkeypatch.setattr(config, "AUTH_TEST_MODE", False)`. This works without any import-order
+gymnastics because `claims_from_request` reads `config.AUTH_TEST_MODE` as a live attribute lookup
+on every call, not a value captured into a closure at import time — patching the already-imported
+module is sufficient. They sit deliberately in the middle of the test taxonomy: more real than a
+unit test (`test_auth.py`'s `groups()` tests), but not end-to-end (no live network call, no real
+API Gateway, no real Cognito token — see the gap below).
+
+**Coverage:** auth-bypass (no claims at all; claims present but no `sub`), admin-role enforcement
+(a customer-group token correctly rejected on every admin-only route, including the two newest —
+`GET /orders/admin`, `PATCH /orders/{id}/delivery-status` — and the exact bracket-string claim
+shape that caused the RBAC bug now proven to pass end-to-end, not just in `groups()` isolation),
+and IDOR/ownership on order-service specifically (a customer cannot read another customer's order
+by ID — 404, not 403, matching the deliberate existence-hiding design already in `get_order()`; an
+admin can; the owner can).
+
+**Asked to critically review its own work, and it found real issues — this record keeps both the
+findings and which ones actually got fixed.** Five were named:
+1. The two newest admin endpoints had zero coverage — fixed, four tests added (accept/reject ×
+   two endpoints).
+2. Every assertion only checked the status code, never the response body — a coincidental 403 from
+   an unrelated bug elsewhere would have passed the same test. Fixed: every rejection now also
+   asserts the exact `detail` message (`"Administrator access is required"`,
+   `"Authentication is required"`, `"Order not found"`), pinning down *which* check actually fired.
+3. **Not fixed, because it isn't fixable within this test type — named instead.** These are
+   integration tests against the app; they call the handler directly, so they can only test what
+   happens *after* API Gateway's JWT authorizer already let a request through. They cannot test
+   token expiry, bad signatures, or issuer/audience mismatches — the exact class of bug behind the
+   CORS-masked-401 debugged live earlier the same session. Closing that requires a genuine
+   end-to-end test against the real deployed API Gateway (CP-038/CP-056, both still ⬜), not more
+   of this test type.
+4. `lambda_event()`'s test-helper is duplicated near-identically across all four files. Considered
+   and deliberately left as-is: the only real fix is a shared test-utility package requiring new
+   cross-service packaging infrastructure, which would be inconsistent with this project's existing,
+   deliberate choice to duplicate `auth.py` itself four times rather than share runtime code across
+   independently-deployable services.
+5. Not actually a defect — a claim from the checkpoint doc ("input-validation is covered
+   elsewhere") was double-checked against the real test files rather than re-asserted, and held up
+   (`test_orders.py` alone already has `test_empty_basket_is_rejected`,
+   `test_invalid_contact_email_is_rejected`, etc.).
+
+**A count was also caught wrong and corrected before it went into the record.** While updating
+`CHECKPOINT_STATUS.md`, an initial claim of "26 tests" was made from memory rather than counted;
+actually counting (`grep "^def test_"` per file, minus the autouse table fixtures the same pattern
+incorrectly matched) gave the real number: **21** — 12 in order-service, 3 each in
+product/inventory/payment. All 21 pass; full suites remain green (order 57/57, product 24/24,
+inventory 27/27, payment 21/21).
+
+**Net effect on CP-035: still 🟡, correctly, not marked done.** Real, meaningful coverage now
+exists where there was none — but the specific class of bug that actually happened live this
+session (an auth rejection at the API Gateway layer, masked as a CORS error) remains untestable by
+this test type. That gap has a name now (finding 3 above) rather than being silently uncovered.
+
+## Update — 2026-08-18 (continued): frontend integration testing (CP-051) started from zero
+
+**Vitest + React Testing Library set up from nothing.** Neither existed in the frontend before
+this — no test runner, no `test` script, no test files. Added as dev dependencies, configured via
+a `test` block inside the existing `vite.config.js` (Vitest reads the same file rather than
+needing a separate config), a `src/test/setup.js` for global test setup, and `npm test` in
+`package.json`.
+
+**Two real tooling failures hit and fixed on the very first run — not test-code bugs, environment
+ones, the same pattern as the CI encoding issue earlier tonight.**
+1. Vitest's default process pool ("forks," spawning a separate OS process per worker) timed out
+   trying to start at all in this environment — every test file failed with
+   "Timeout waiting for worker to respond" before a single test even ran. Switched to
+   `pool: "threads"` (workers run in-process instead), which started immediately.
+2. Once tests actually ran, later tests in the same file began failing with "found multiple
+   elements" errors — leftover DOM from earlier tests in the same file, still mounted. React
+   Testing Library's automatic cleanup-between-tests relies on detecting Jest's global test hooks;
+   Vitest is not Jest, so nothing was unmounting anything between tests. Fixed with an explicit
+   `afterEach(cleanup)` in the setup file — a well-known but easy-to-miss Vitest+RTL integration
+   step, not a project-specific bug.
+
+**First tests written, both chosen for real behaviour, not coverage padding:**
+- `ProductImage.test.jsx` (3 tests) — a direct regression test for tonight's actual broken-image
+  bug: a real `src` renders the image; no `src` shows the placeholder; and, critically, a `src`
+  that *fails to load* (simulated via `fireEvent.error`) also falls back to the placeholder rather
+  than a permanent broken-image icon — the exact behaviour `ProductImage.jsx` was built to fix.
+- `ProductCard.test.jsx` (6 tests) — `fetchStock` is mocked (a component test proves the
+  component's behaviour given a response; it is not re-proving the backend is reachable, which the
+  backend's own tests and tonight's manual testing already cover). Covers: Add enabled/disabled by
+  stock level, the deliberate 404-vs-500 distinction (`ProductCard.jsx`'s own comment: a 404 means
+  no inventory record and is treated as out of stock, but a transient 500 is left alone rather than
+  guessing), and that clicking Add calls `onAddToCart` without also triggering `onSelect` — the
+  `stopPropagation` behaviour added earlier this project to stop the Add button from also opening
+  the product detail view.
+
+All 9 pass; `npm run build` re-confirmed unaffected (test files are naturally excluded from the
+production bundle — nothing extra needed for that). Wired into
+`.github/workflows/ci.yml`'s frontend job as `npm test`, run before `npm run build`, so this is
+now enforced on every push, not just run once locally.
+
+**Deliberately narrow, and recorded as such rather than implied to be broader:** this covers two
+components with genuinely meaningful, previously-untested behaviour. It is not frontend test
+coverage in general — `CartPage` (form validation, payment-method switching), `CustomersOrdersPage`
+(the delivery-status dropdown's gating logic), `AdminPanel`, and all routing/navigation remain
+untested. CP-051 moves from ⬜ to 🟡 on that basis, not to ✅.
