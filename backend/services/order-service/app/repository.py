@@ -67,6 +67,10 @@ def create_order(order: Order) -> Order:
     """
     item = order.model_dump()
     item["saga_status"] = order.status
+    # A constant partition key for all-orders-index (the admin Customers &
+    # Orders view) — see orders.tf for why a Query against a fixed key beats
+    # a table Scan for "every order, newest first".
+    item["order_bucket"] = "ALL"
 
     try:
         table.put_item(
@@ -299,6 +303,70 @@ def list_orders_by_customer(customer_id: str, limit: int = 20, cursor: dict | No
 
     response = table.query(**kwargs)
     return response.get("Items", []), response.get("LastEvaluatedKey")
+
+
+def list_all_orders(limit: int = 20, cursor: dict | None = None):
+    """
+    Every order, across every customer, newest first — the admin Customers &
+    Orders view. Queries all-orders-index rather than scanning the table:
+    order_bucket is a constant ("ALL") set on every order at write time, so
+    this costs proportional to what is actually returned, not to the whole
+    table (see orders.tf for the full reasoning and its own tradeoff).
+
+    Returns (items, last_evaluated_key), the same shape as
+    list_orders_by_customer, so the route handler doesn't need to know which
+    one it called.
+    """
+    kwargs = {
+        "IndexName": "all-orders-index",
+        "KeyConditionExpression": Key("order_bucket").eq("ALL"),
+        "ScanIndexForward": False,   # newest first, same convention as list_orders_by_customer
+        "Limit": limit,
+    }
+    if cursor:
+        kwargs["ExclusiveStartKey"] = cursor
+
+    response = table.query(**kwargs)
+    return response.get("Items", []), response.get("LastEvaluatedKey")
+
+
+def set_delivery_status(order_id: str, delivery_status: str):
+    """
+    Record fulfilment progress. Guarded only by "the order must actually be
+    confirmed" (CONFIRMED or PENDING_ON_DELIVERY) — unlike set_status, this
+    is not a conditional state-machine transition, because delivery status
+    is operational bookkeeping an admin corrects by hand, not a safety
+    property two concurrent processes could race on.
+    """
+    try:
+        response = table.update_item(
+            Key={"order_id": order_id},
+            UpdateExpression="SET delivery_status = :ds, updated_at = :now",
+            ConditionExpression=(
+                "attribute_exists(order_id) AND #status IN (:confirmed, :cod)"
+            ),
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":ds": delivery_status,
+                ":now": _now(),
+                ":confirmed": states.CONFIRMED,
+                ":cod": states.PENDING_ON_DELIVERY,
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        current = get_order(order_id)
+        if current is None:
+            raise ValueError(f"Order {order_id} does not exist")
+        raise ValueError(
+            f"Order {order_id} is in state {current['status']} — only a "
+            "confirmed order (CONFIRMED or PENDING_ON_DELIVERY) can have its "
+            "delivery status set"
+        )
+
+    return response["Attributes"]
 
 
 def list_orders_needing_attention():

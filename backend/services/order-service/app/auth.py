@@ -17,7 +17,14 @@ def claims_from_request(request: Request) -> dict:
 
 def groups(claims: dict) -> set[str]:
     value = claims.get("cognito:groups", [])
-    return set(value.split(",")) if isinstance(value, str) else set(value)
+    # API Gateway's HTTP API JWT authorizer forwards array-valued claims as a
+    # Python-repr-shaped string, e.g. "[customers]" or "[admin, customers]" —
+    # not a clean CSV. A naive split(",") on a single group leaves the
+    # brackets attached ("[customers]" != "customers"), so every real
+    # single-group user fails require_customer/require_admin silently.
+    if isinstance(value, str):
+        return {group.strip() for group in value.strip("[]").split(",") if group.strip()}
+    return set(value)
 
 
 def require_admin(request: Request) -> dict:

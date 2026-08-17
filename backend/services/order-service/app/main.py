@@ -9,7 +9,7 @@ from mangum import Mangum
 from app import config, repository, saga
 from app.auth import claims_from_request, groups, require_admin, require_customer
 from app.clients import DownstreamUnknown
-from app.models import Order, OrderCreate, OrderPage
+from app.models import DeliveryStatusUpdate, Order, OrderCreate, OrderPage
 from app.saga import BasketInvalid
 
 logging.basicConfig(
@@ -94,6 +94,42 @@ def list_stuck_orders(_claims: dict = Depends(require_admin)):
     return repository.list_orders_needing_attention()
 
 
+# Declared BEFORE /api/v1/orders/{order_id} for the same reason as /stuck
+# above — otherwise the parameterised route would swallow "admin" as an
+# order id.
+@app.get("/api/v1/orders/admin", response_model=OrderPage)
+def list_all_orders_admin(
+    limit: int = Query(default=20, le=100, ge=1),
+    cursor: str | None = None,
+    _claims: dict = Depends(require_admin),
+):
+    """
+    Every order, across every customer — the admin Customers & Orders view.
+
+    The customer-scoped GET /api/v1/orders below deliberately has no "list
+    everyone's orders" option, for the data-protection reason its own
+    docstring gives. This is that capability, made safe the same way
+    /orders/stuck is: gated to admin only, not exposed on the general
+    endpoint. repository.list_all_orders() is a Scan (see its own docstring
+    for why there is no GSI that avoids one) — fine at this project's data
+    volume, a genuine scaling limitation at real volume.
+    """
+    start_key = None
+    if cursor:
+        try:
+            start_key = json.loads(base64.urlsafe_b64decode(cursor).decode())
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    items, last_key = repository.list_all_orders(limit=limit, cursor=start_key)
+
+    next_cursor = None
+    if last_key:
+        next_cursor = base64.urlsafe_b64encode(json.dumps(last_key).encode()).decode()
+
+    return {"items": items, "next_cursor": next_cursor}
+
+
 @app.get("/api/v1/orders/{order_id}", response_model=Order)
 def get_order(order_id: str, claims: dict = Depends(claims_from_request)):
     """Fetch a single order by id."""
@@ -107,6 +143,30 @@ def get_order(order_id: str, claims: dict = Depends(claims_from_request)):
     return order
 
 
+@app.patch("/api/v1/orders/{order_id}/delivery-status", response_model=Order)
+def update_delivery_status(
+    order_id: str,
+    body: DeliveryStatusUpdate,
+    _claims: dict = Depends(require_admin),
+):
+    """
+    Set fulfilment progress on a confirmed order (admin-only).
+
+    Not a saga transition — repository.set_delivery_status() only requires
+    the order to currently be CONFIRMED or PENDING_ON_DELIVERY, and does not
+    itself validate a forward-only sequence (PROCESSING -> ... -> DELIVERED).
+    That is a deliberate simplicity trade-off: this is operational
+    bookkeeping an admin corrects by hand, not a financial safety property
+    like the saga's own conditional transitions.
+    """
+    if repository.get_order(order_id) is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        return repository.set_delivery_status(order_id, body.delivery_status)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.get("/api/v1/orders", response_model=OrderPage)
 def list_orders(
     customer_id: str | None = None,
@@ -117,12 +177,12 @@ def list_orders(
     """
     The signed-in customer's orders, newest first, with cursor pagination.
 
-    The customer key is Cognito's subject claim, not a request query value.
-    There is no "list every order in the system" endpoint, because that would
-    be a full table Scan and a data-protection problem. Same cursor scheme as
-    the Product service — an opaque base64 encoding of DynamoDB's
-    LastEvaluatedKey, not an offset, because DynamoDB has no offset and
-    emulating one costs more the deeper you page.
+    The customer key is Cognito's subject claim, not a request query value —
+    this endpoint cannot be used to browse another customer's orders, even
+    by an admin (see GET /api/v1/orders/admin below for that capability,
+    gated separately). Same cursor scheme as the Product service — an opaque
+    base64 encoding of DynamoDB's LastEvaluatedKey, not an offset, because
+    DynamoDB has no offset and emulating one costs more the deeper you page.
     """
     start_key = None
     if cursor:

@@ -11,6 +11,13 @@ _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 PaymentMethod = Literal["card", "cash_on_delivery"]
 
+# Fulfilment tracking, distinct from the saga's own `status`. This is a plain
+# forward progression an admin sets by hand — not a safety-critical state
+# machine like the saga's, so there is no conditional-transition guard here:
+# an admin can move it to any value at any time, the same way a real courier
+# dashboard would let staff correct a mis-click.
+DeliveryStatus = Literal["PROCESSING", "SHIPPED", "OUT_FOR_DELIVERY", "DELIVERED"]
+
 
 def _two_places(value: Decimal) -> str:
     """
@@ -162,6 +169,11 @@ class Order(BaseModel):
     created_at: str
     updated_at: str
 
+    # Only meaningful once the saga has actually confirmed the order
+    # (CONFIRMED or PENDING_ON_DELIVERY) — there is nothing to ship for a
+    # REJECTED or FAILED order. None until an admin sets it.
+    delivery_status: Optional[DeliveryStatus] = None
+
     # NOTE (see below): saga_status is NOT on this model. It is a storage-level
     # attribute that exists only to drive the sparse saga-status GSI, and
     # it is REMOVEd when an order reaches a healthy terminal state. It is
@@ -173,3 +185,7 @@ class OrderPage(BaseModel):
     """The shape returned by the paginated list endpoint, mirroring ProductPage."""
     items: list[Order]
     next_cursor: Optional[str] = None
+
+
+class DeliveryStatusUpdate(BaseModel):
+    delivery_status: DeliveryStatus

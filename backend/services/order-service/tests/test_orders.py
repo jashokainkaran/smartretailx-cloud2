@@ -43,6 +43,7 @@ def test_tables():
             {"AttributeName": "customer_id", "AttributeType": "S"},
             {"AttributeName": "created_at", "AttributeType": "S"},
             {"AttributeName": "saga_status", "AttributeType": "S"},
+            {"AttributeName": "order_bucket", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -57,6 +58,14 @@ def test_tables():
                 "IndexName": "saga-status-index",
                 "KeySchema": [
                     {"AttributeName": "saga_status", "KeyType": "HASH"},
+                    {"AttributeName": "created_at", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "all-orders-index",
+                "KeySchema": [
+                    {"AttributeName": "order_bucket", "KeyType": "HASH"},
                     {"AttributeName": "created_at", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
@@ -743,3 +752,70 @@ def test_stuck_orders_lists_every_needs_attention_state(calls, monkeypatch):
         unknown_payment: states.PAYMENT_UNKNOWN,
         unknown_stock: states.STOCK_UNKNOWN,
     }
+
+
+def test_delivery_status_can_be_set_on_a_confirmed_order(calls):
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    response = client.patch(
+        f"/api/v1/orders/{order_id}/delivery-status",
+        json={"delivery_status": "SHIPPED"},
+    )
+    assert response.status_code == 200
+    assert response.json()["delivery_status"] == "SHIPPED"
+
+
+def test_delivery_status_can_be_set_on_a_cash_on_delivery_order(calls):
+    order_id = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()["order_id"]
+
+    response = client.patch(
+        f"/api/v1/orders/{order_id}/delivery-status",
+        json={"delivery_status": "OUT_FOR_DELIVERY"},
+    )
+    assert response.status_code == 200
+    assert response.json()["delivery_status"] == "OUT_FOR_DELIVERY"
+
+
+def test_delivery_status_rejected_on_a_non_confirmed_order(calls, monkeypatch):
+    """A REJECTED order has nothing to ship — the conditional guard in
+    repository.set_delivery_status must refuse it, not just the frontend."""
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Insufficient stock for: p1")
+    ))
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    response = client.patch(
+        f"/api/v1/orders/{order_id}/delivery-status",
+        json={"delivery_status": "SHIPPED"},
+    )
+    assert response.status_code == 409
+
+
+def test_delivery_status_on_missing_order_is_404(calls):
+    response = client.patch(
+        "/api/v1/orders/does-not-exist/delivery-status",
+        json={"delivery_status": "SHIPPED"},
+    )
+    assert response.status_code == 404
+
+
+def test_delivery_status_rejects_an_unknown_value(calls):
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    response = client.patch(
+        f"/api/v1/orders/{order_id}/delivery-status",
+        json={"delivery_status": "TELEPORTED"},
+    )
+    assert response.status_code == 422
+
+
+def test_admin_order_list_spans_every_customer(calls):
+    """The customer-scoped GET /api/v1/orders cannot see across customers —
+    this is the deliberately separate, admin-gated capability that can."""
+    first = client.post("/api/v1/orders", json=basket(customer_id="cust-a")).json()["order_id"]
+    second = client.post("/api/v1/orders", json=basket(customer_id="cust-b")).json()["order_id"]
+
+    seen = {o["order_id"] for o in client.get("/api/v1/orders/admin").json()["items"]}
+    assert {first, second} <= seen
