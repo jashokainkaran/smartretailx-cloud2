@@ -111,10 +111,12 @@ locals {
     inventory_release_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/release" }
     inventory_confirm_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/confirm" }
 
-    order_create = { service = "order", route_key = "POST /api/v1/orders" }
-    order_list   = { service = "order", route_key = "GET /api/v1/orders" }
-    order_get    = { service = "order", route_key = "GET /api/v1/orders/{order_id}" }
-    order_stuck  = { service = "order", route_key = "GET /api/v1/orders/stuck" }
+    order_create          = { service = "order", route_key = "POST /api/v1/orders" }
+    order_list            = { service = "order", route_key = "GET /api/v1/orders" }
+    order_get             = { service = "order", route_key = "GET /api/v1/orders/{order_id}" }
+    order_stuck           = { service = "order", route_key = "GET /api/v1/orders/stuck" }
+    order_admin_list      = { service = "order", route_key = "GET /api/v1/orders/admin" }
+    order_delivery_status = { service = "order", route_key = "PATCH /api/v1/orders/{order_id}/delivery-status" }
 
     payment_get    = { service = "payment", route_key = "GET /api/v1/payments/{payment_id}" }
     payment_refund = { service = "payment", route_key = "POST /api/v1/payments/{payment_id}/refund" }

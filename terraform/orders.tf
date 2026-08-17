@@ -26,6 +26,11 @@ resource "aws_dynamodb_table" "orders" {
     type = "S"
   }
 
+  attribute {
+    name = "order_bucket"
+    type = "S"
+  }
+
   # "My orders", newest first. Without this, listing a customer's orders
   # would mean a full table Scan with a filter — cost proportional to every
   # order in the system rather than to the ones being returned.
@@ -54,6 +59,23 @@ resource "aws_dynamodb_table" "orders" {
   global_secondary_index {
     name            = "saga-status-index"
     hash_key        = "saga_status"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  # Every order across every customer, newest first — the admin Customers &
+  # Orders view. order_bucket is a constant ("ALL") set on every order at
+  # write time: DynamoDB has no native "give me everything" query, and a
+  # Query against a real key (even a constant one) is the standard pattern
+  # for that access pattern — a full table Scan costs proportional to the
+  # whole table, this costs proportional to what's actually returned. The
+  # tradeoff is the usual one for a single constant partition key: every
+  # order lands in the same partition, which is fine at this project's
+  # volume and would need bucketing (e.g. by month) to stay healthy at real
+  # e-commerce scale — a scale problem, not a correctness one.
+  global_secondary_index {
+    name            = "all-orders-index"
+    hash_key        = "order_bucket"
     range_key       = "created_at"
     projection_type = "ALL"
   }

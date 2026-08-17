@@ -298,7 +298,8 @@ resource "aws_iam_role_policy" "order_api" {
       },
       {
         # Querying a GSI requires permission on the index ARN as well as the
-        # table — customer-orders-index and saga-status-index.
+        # table — customer-orders-index, saga-status-index, and
+        # all-orders-index (the admin Customers & Orders view).
         Effect   = "Allow"
         Action   = "dynamodb:Query"
         Resource = "${aws_dynamodb_table.orders.arn}/index/*"
