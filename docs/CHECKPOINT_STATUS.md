@@ -2,9 +2,10 @@
 COMP60010 / ECDWA2
 
 Verified against the actual repository state (code, `terraform state list`, `git status`,
-`docs/IMPLEMENTATION_RECORD.md`) as of 2026-08-17, branch `feature/order-saga`, against the
-**expanded 56-checkpoint roadmap**. Where a checkpoint's own label ("IN PROGRESS", "NEXT") disagreed
-with what's actually in the repo, the repo wins and the discrepancy is noted.
+`docs/IMPLEMENTATION_RECORD.md`) as of 2026-08-17, branch `main` (`feature/order-saga` was merged
+in), against the **expanded 56-checkpoint roadmap**. Where a checkpoint's own label ("IN
+PROGRESS", "NEXT") disagreed with what's actually in the repo, the repo wins and the discrepancy
+is noted.
 
 Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 
@@ -37,9 +38,10 @@ Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 |---|---|---|---|
 | 🟡 CP-011 | Order saga — completion and live proof | Core saga, 9 states, and 26 local tests exist. | No price-changed-at-checkout comparison, no circuit breaker, and no recorded live API Gateway confirmation/decline proof. |
 | 🟡 CP-014 | Terraform — Orders + Saga deployment | Order Lambda, `order_outbox` table and second relay are applied. | Live CONFIRMED / FAILED / REJECTED proof through API Gateway remains outstanding. |
-| 🟡 CP-019 | Frontend — Customer flow | Catalogue, product detail, local basket, tokenised checkout and protected order-history views are implemented locally. A separate `CustomerNavbar`/`AdminNavbar` split replaced the single conditional nav. | Run the complete checkout journey against deployed services, add UI tests, then upload the production build to S3/CloudFront. |
-| 🟡 CP-021 | Cognito / RBAC | User pool, public SPA client, managed domain, `customers`/`admin` groups, automatic customer assignment, Hosted UI PKCE sign-in, the API Gateway JWT authorizer, and IAM-signed saga calls are applied. Two real bugs were found by testing the deployed admin panel (not by code review) and are now fixed **in code, not yet deployed**: (1) the frontend was sending the Cognito *access* token, which does not carry `cognito:groups` — every `require_admin`/`require_customer` check failed for every user regardless of actual role, confirmed live via CloudWatch access logs (`POST /api/v1/products` → 403 for an admin); fixed by sending the *ID* token instead. (2) `GET /api/v1/products?include_inactive=true` could never succeed because no API Gateway route attached the JWT authorizer to it; replaced with a dedicated `GET /api/v1/products/admin` route, not yet applied (`terraform plan` shows 1 pending resource). The previous "✅ Done, live-verified" status here was written before both bugs were found and has been withdrawn — see `IMPLEMENTATION_RECORD.md` §5 amendment. | Push a rebuilt `product-service` image, `terraform apply` the one pending route, then re-verify with a real admin sign-in against the deployed site (not local `npm run dev`). Separately: **zero automated test coverage exists for `require_admin`/`require_customer`/ownership checks** across all four services — every existing test bypasses auth via `AUTH_TEST_MODE`, which is exactly why bug (1) shipped past "76/76 tests passing." Worth at least one real 401/403 test per service before this is called done. |
-| 🟡 CP-022 | Frontend — Admin panel | Product create/edit/activate/deactivate (now a table with a thumbnail column, per-row Edit button, and a top-level "Add product" button instead of a dropdown-driven form), stock adjustments, stuck-order and payment/refund controls, a paginated ("Load more") product list, and a dedicated Dashboard landing page (product counts, orders-needing-attention) are implemented locally, with admins auto-redirected there on sign-in. | Blocked on the same CP-021 deployment gap above — the admin panel cannot be live-tested until the `/products/admin` route and its Lambda code are actually deployed. Add UI tests and deploy the production build. |
+| 🟡 CP-019 | Frontend — Customer flow | Catalogue, product detail, local basket, protected order-history, and now a full checkout form: delivery address, contact email/phone, card-or-cash-on-delivery selector, and live client-side validation on every field. Card payment tokenises in the browser (a mock, not a real PSP integration — no card number ever reaches the backend). A separate `CustomerNavbar`/`AdminNavbar` split replaced the single conditional nav, and both now have a mobile hamburger menu — the desktop nav was `hidden md:flex` with **no fallback at all** below 768px, found and fixed this round. **The production build is deployed** to S3/CloudFront (`aws s3 sync`, confirmed uploaded) — this is a change from every earlier note in this file saying the bucket was still empty. | Complete a live checkout run end-to-end against the deployed site (blocked on the CP-021 rendering issue below). Add UI tests (CP-051, still zero). |
+| 🟡 CP-021 | Cognito / RBAC | User pool, public SPA client, managed domain, `customers`/`admin` groups, automatic customer assignment, Hosted UI PKCE sign-in, the API Gateway JWT authorizer, and IAM-signed saga calls are applied. The two bugs noted in the previous revision of this file (wrong Cognito token type; the missing `/products/admin` authorizer route) are fixed **and deployed** — confirmed with `terraform plan` returning "No changes", both Lambda `CodeSha256` values matching the pushed images, and live `curl` checks against the real API (`GET /products` → 200, `GET /products/admin` → 401, `POST /orders` → 401, all before Lambda is even invoked). A **third** bug was found today by an actual admin sign-in against the deployed site: the page went blank after landing on `#dashboard`. Root-caused by checking the live `orders` table directly — the `Order` response model was made to require `shipping_address`/`payment_method`/etc. (added for cash-on-delivery, CP-024) with no allowance for orders created before those fields existed, which would 500 any endpoint reading a pre-existing order. Fixed (those fields are now optional on the *response* model only; still required on `OrderCreate` for new checkouts) and a React error boundary was added app-wide, since there previously was none — an uncaught render error was silently unmounting the entire page with zero console signal. **Not yet confirmed to be the actual cause** of the blank page (the specific data path Dashboard queries happened to be empty at the time), so treat as fixed-but-unverified until re-tested live. | Rebuild/push `order-service` (has the model fix) and redeploy the frontend (has the error boundary), then have a real admin sign in against the deployed site and confirm the dashboard actually renders. Separately, still open: **zero automated test coverage for `require_admin`/`require_customer`/ownership checks** — every test bypasses auth via `AUTH_TEST_MODE`, which is why the token-type bug shipped past "76/76 passing" in the first place. |
+| 🟡 CP-024 | Cash on delivery | `PENDING_ON_DELIVERY` is a genuinely new terminal state (`states.py`), deliberately not a reuse of `PENDING` — that's an in-flight, milliseconds-scale state, and collapsing the two would make a working COD order indistinguishable from a crashed saga. `OrderCreate`/`Order` carry `payment_method`, and the saga branches right after stock reservation: card takes the existing charge/confirm/compensate path unchanged; COD skips straight to confirming stock, and a confirm failure goes straight to `FAILED` since nothing was ever charged to refund. 9 new tests (happy path, event payload, stays out of the stuck-order index, oversell prevention still applies, confirm-failure with nothing to compensate, confirm-timeout, card-without-token rejected, COD-without-token accepted, malformed email rejected). Frontend: the checkout form's payment-method radio, deployed. | Live-verify an actual cash-on-delivery order through the deployed site (same blockage as CP-021/CP-022 above). |
+| 🟡 CP-022 | Frontend — Admin panel | Product create/edit/activate/deactivate (a table with a thumbnail column, per-row Edit button, and a top-level "Add product" button — the old dropdown-driven single form is gone), stock adjustments, stuck-order and payment/refund controls, a paginated ("Load more") product list, and a dedicated Dashboard landing page (product counts, orders-needing-attention), with admins auto-redirected there on sign-in and a mobile hamburger nav. **Deployed**, not just local. | The CP-021 blank-dashboard bug above is specifically in this surface — cannot be called live-verified until that's confirmed fixed by an actual admin session. Add UI tests. |
 
 ---
 
@@ -51,8 +53,7 @@ Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 | ⬜ CP-017 | Correlation IDs + real health checks | Every service's `/health` returns `{"status": "ok"}` unconditionally — no DynamoDB reachability check. No `correlation_id` generation or propagation anywhere in `backend/`. **On the NEVER CUT list, and explicitly time-sensitive** ("cannot be retrofitted cheaply") — worth doing before CP-025's Notification service adds a fifth consumer to thread it through. |
 | ⬜ CP-018 | CI — GitHub Actions | No `.github/workflows/`. Must run backend and frontend tests, linting, dependency/security checks, Docker builds, and `terraform fmt`/`validate`/plan. |
 | ⬜ CP-020 | WebSocket API + real-time push | No websocket-protocol `apigatewayv2` resource or connections table. Push stock, order-status and delivery-status events. **On the NEVER CUT list** — Task 4 requirement. |
-| ⬜ CP-023 | Authenticated order status push | Depends on CP-020 and CP-021, neither started. On the cut list if time is short. |
-| ⬜ CP-024 | Cash on delivery | No `payment_method`/`PENDING_ON_DELIVERY` anywhere in `order-service` (grep-confirmed). Correctly gated behind CP-019, which hasn't started. |
+| ⬜ CP-023 | Authenticated order status push | Depends on CP-020, still not started, and CP-021, now applied. On the cut list if time is short. |
 | ⬜ CP-025 | Notification service | `backend/services/notification-service/` contains only `.gitkeep`. Build an idempotent EventBridge/SQS/DLQ consumer for order and delivery events, with an in-app notification feed and optional email. |
 | ⬜ CP-026 | Terraform — Observability | No alarms, no dashboard, no custom saga metrics in Terraform. X-Ray tracing config exists on the *unapplied* HTTP Lambdas only. **On the NEVER CUT list** (ADR-035 already promises the COMPENSATION_FAILED alarm). |
 | ⬜ CP-027 | Backup and Recovery | S3 versioning and DynamoDB PITR exist, but there is no restore drill, documented backup plan, RTO/RPO, or recovery evidence. |
@@ -139,21 +140,41 @@ it is captured by CP-050 as a global-retail correctness requirement.
    treated as superseded rather than trusted, until it is recaptured against the fixed, deployed
    code. See `IMPLEMENTATION_RECORD.md` §5 for the full amendment, including why the existing test
    suite could not have caught this (`AUTH_TEST_MODE` bypasses the exact code path that broke).
+7. **`main` was briefly broken by an operational mistake, unrelated to any code decision, and is
+   now fixed.** Two `git add .` runs from the repo root (not `frontend/`) swept up local
+   package-manager caches that had no business being tracked — `.pnpm-store/` (which happened to
+   contain a full duplicate copy of the frontend project) and later `frontend/.vite/` (Vite's dev
+   cache, ~25,000 lines of bundled React internals). Somewhere between those two commits, 9 real
+   files were deleted from disk — `index.html`, `package.json`, `package-lock.json`,
+   `tailwind.config.js`, `postcss.config.js`, `src/index.css`, and three base components
+   (`ErrorState.jsx`, `ImagePlaceholder.jsx`, `LoadingState.jsx`) — and that deletion got
+   committed as fact. `main` could not build at all in that state. Restored all 9 files from the
+   last commit that had them intact, removed both cache directories from tracking, and added
+   `.pnpm-store/`/`.vite/` to `.gitignore` at both the root and `frontend/` level so this specific
+   mistake can't recur. Confirmed fixed with an actual `npm run build` from a wiped `dist/`, not
+   just a git diff. Worth naming for CP-034/CP-040 the same way discrepancy 5 already does: a
+   `git commit` succeeding is not evidence the result builds.
+8. **The full backend deployment pipeline is now verified end-to-end, not just applied.** After
+   `terraform apply`, checked `terraform plan` again (clean), pulled both Lambdas'
+   `CodeSha256` directly and confirmed they match the digests actually pushed to ECR, and ran live
+   `curl` checks against the real API Gateway URL confirming both the public route and the
+   previously-missing admin route behave correctly. This is the same "plan returns no changes,
+   not just applied cleanly" standard discrepancy 5 sets for infrastructure, now met for an
+   application-layer deploy too.
 
 ## Update — network and edge complete
 
 Since the checkpoint above was written, CP-011, CP-012, CP-014, CP-015,
 CP-016 and CP-029 have all been completed.
 
-**ADRs now owed** (decisions taken but not yet recorded):
+**ADR-041 is now written** (`docs/architecture/ARCHITECTURE_DECISIONS.md`) — HTTP API over REST
+API, including the later-scoped-and-rejected REST API migration (see discrepancy 3 above). Note
+that file is in `.gitignore` ("internal planning docs, excluded by choice") — a deliberate
+decision, not an oversight, but worth remembering if the report needs to cite it directly rather
+than by reference.
 
-- **ADR-041** — HTTP API over REST API. The substitution is defensible:
-  request validation is redundant against Pydantic, usage plans and API keys
-  exist for metering third-party consumers that do not exist here, HTTP API
-  is materially cheaper and lower latency, and its **native JWT authorizer**
-  makes the coming Cognito work simpler rather than harder. The one genuine
-  loss is that WAFv2 cannot attach to an HTTP API — resolved by fronting it
-  with CloudFront, which was being added for the frontend regardless.
+**ADRs still owed** (decisions taken but not yet recorded):
+
 - **ADR-042** — no NAT gateway; private subnets with no default route.
   Includes why `order-api` is the single function left outside the VPC.
 - **ADR-043** — network ACLs alongside security groups as a stateless second

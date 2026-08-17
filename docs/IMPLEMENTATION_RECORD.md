@@ -1839,3 +1839,71 @@ deployed. `terraform plan` shows exactly one pending resource (the new `/product
 directly, is still empty. CP-021 is downgraded to in-progress in `CHECKPOINT_STATUS.md`
 accordingly, and the four screenshots described above should be recaptured after deployment
 before being cited as evidence again.
+
+## Update — 2026-08-17 (continued): deployment verified, cash-on-delivery added, two more bugs found live
+
+**The deployment above happened, and was verified rather than assumed.** `product-service` and
+later `order-service` were rebuilt and pushed to ECR, `terraform apply` ran, and the result was
+checked three independent ways rather than trusted on "apply succeeded": `terraform plan`
+returned "No changes"; both Lambdas' live `CodeSha256` were pulled directly and confirmed to
+match the digest of the image actually pushed; and real `curl` requests against the deployed API
+Gateway URL confirmed `GET /api/v1/products` → 200, `GET /api/v1/products/admin` (no token) →
+401, `POST /api/v1/orders` (no token) → 401 with the rejection coming from the gateway itself,
+before Lambda is even invoked. The frontend was then built and uploaded to S3 for the first
+time (`aws s3 sync`, CloudFront invalidated) — the bucket had been empty since CP-029 was first
+applied.
+
+**Cash on delivery (CP-024) was built in this window.** `states.py` gained `PENDING_ON_DELIVERY`
+as a genuinely new terminal state — deliberately not a reuse of the existing `PENDING`, which is
+`IN_FLIGHT` and expected to move within milliseconds; collapsing the two would make a legitimately
+waiting COD order indistinguishable from a crashed saga to the recovery tooling. `OrderCreate`
+gained `shipping_address`, `contact_email`, `contact_phone` (all required) and `payment_method`
+(`"card"` | `"cash_on_delivery"`); `payment_token` became optional, enforced by a model validator
+that requires it only when paying by card. `saga.py` branches immediately after stock reservation
+— the one step both payment methods share — skipping the charge/confirm-with-refund-compensation
+path entirely for COD and landing on `PENDING_ON_DELIVERY` instead of `CONFIRMED`. A confirm
+failure on a COD order goes straight to `FAILED`: nothing was ever charged, so there is nothing to
+refund, mirroring the same no-release reasoning the card path's `_compensate_refund` already
+applies at that exact step. 9 new tests cover the happy path, the event payload carrying the
+distinguishing status, staying out of the stuck-order recovery index, oversell prevention still
+applying to COD, the no-compensation-needed confirm failure, confirm-timeout, and the
+card-requires-token / COD-does-not-require-token / malformed-email validation rules.
+
+On the frontend, the bare "paste a demo payment token" field was replaced with a real checkout
+form: delivery address, contact email (prefilled from the signed-in user's ID token, still
+editable) and phone, a card/cash-on-delivery radio, and live per-field validation mirroring the
+backend's own rules. The card option doesn't collect a real card processor integration (out of
+scope without a live PSP account) but is deliberately still PCI-conscious: card number/expiry/CVV
+are validated and turned into a token entirely in the browser (`CardFields.jsx`'s
+`deriveMockToken`), and only that token — never the raw card number — is sent to the backend,
+preserving the same property `payment-service`'s own tokenisation design already commits to
+(ADR-007).
+
+**Bug found while committing: `main` was briefly broken, unrelated to any application code.** Two
+`git add .` runs from the repo root swept up local package-manager caches — `.pnpm-store/`
+(containing a full duplicate copy of the frontend project) and later `frontend/.vite/` (~25,000
+lines of bundled Vite/React internals) — and somewhere between those two commits, 9 real files
+were deleted from disk and that deletion got committed as fact: `index.html`, `package.json`,
+`package-lock.json`, `tailwind.config.js`, `postcss.config.js`, `src/index.css`, and three base
+components. `main` could not build in that state. Restored all 9 from the last commit that had
+them intact, removed both cache directories from tracking, added `.pnpm-store/`/`.vite/` to
+`.gitignore` at both the root and `frontend/` level, and confirmed the fix with an actual
+`npm run build` from a wiped `dist/` — not just a clean git diff.
+
+**Bug found by an actual admin sign-in against the deployed site, the same way the CP-021 bugs
+above were found — not by code review:** after signing in as admin, the URL correctly resolved to
+`#dashboard` (the auto-redirect worked), but the page rendered blank. Checked the live `orders`
+table directly rather than guess at the cause: pre-existing orders (created before the
+cash-on-delivery model change above) have no `shipping_address`/`payment_method`/etc. attributes
+at all — DynamoDB is schemaless, nothing backfilled the old rows. Since those fields were added as
+*required* on the `Order` response model, any endpoint reading one of those old orders back would
+fail Pydantic validation. Fixed by making them optional on the response model only (`OrderCreate`,
+the request model used at checkout, still requires them for new orders — validation on new
+checkouts is unaffected). Checked whether this was actually reachable from the specific query the
+Dashboard makes (`GET /orders/stuck`) — at the time, zero orders were in a needs-attention state,
+so this fix is real and necessary but **not confirmed to be the specific cause** of the blank page
+seen. Also added a React error boundary app-wide (`ErrorBoundary.jsx`), since none existed
+anywhere — React 18's default behaviour for an uncaught render error is to unmount the *entire*
+tree with no visible signal, which is indistinguishable from a blank page and was actively making
+this class of bug harder to diagnose than it needed to be. Both fixes are built and tested
+(35/35 order-service tests, clean frontend build) but not yet redeployed as of this writing.

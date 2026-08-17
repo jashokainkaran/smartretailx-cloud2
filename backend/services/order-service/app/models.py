@@ -130,10 +130,16 @@ class Order(BaseModel):
     customer_id: str
     items: list[OrderLineItem]
 
-    shipping_address: ShippingAddress
-    contact_email: str
-    contact_phone: str
-    payment_method: PaymentMethod
+    # Optional here even though OrderCreate requires them for new checkouts:
+    # orders placed before this field existed have no such attribute in
+    # DynamoDB (it's schemaless — nothing backfilled the old rows), and this
+    # is the RESPONSE model. A required field here would 500 on every
+    # endpoint that reads one of those pre-existing orders back out —
+    # confirmed live against the deployed orders table, not hypothetical.
+    shipping_address: Optional[ShippingAddress] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    payment_method: Optional[PaymentMethod] = None
 
     # Computed server-side from the snapshotted line items, never sent by
     # the client, for the same reason unit_price isn't.
