@@ -1928,3 +1928,220 @@ Two things happened after the amendment above that are recorded in full detail i
    checkout draft persistence, and a consistent status-page system — exists only locally.** All of
    it was verified piece by piece (clean builds throughout), but as of this writing it is neither
    committed (`git status` shows 20 files under `frontend/src/`) nor confirmed deployed.
+
+## Update — 2026-08-17 (continued): a systemic RBAC bug found live, fixed across all four
+services, and two deployment-pipeline gaps closed in the same investigation
+
+**What looked like a cash-on-delivery bug was not COD-specific at all.** A user report ("COD
+order isn't showing on My Orders") was investigated the same way as every bug in this project's
+history — against live CloudWatch logs and a direct `aws dynamodb scan`, not by re-reading the
+code and guessing. That investigation ruled out, in order, with evidence each time: the wrong
+Cognito account (the API Gateway access log showed a real single shopping session — browse,
+detail, `GET /orders`, `POST /orders` — all 403, not a mismatched account); a stale S3 bundle
+(the deployed JS was grepped directly and already contained the COD/checkout code); and CORS
+(the frontend and API share one CloudFront domain, so hosted-site requests are same-origin and
+CORS is irrelevant there — it only matters for local dev against the deployed API, which is
+exactly what `CORS_ORIGINS=http://localhost:5173` is scoped for).
+
+**The actual root cause: API Gateway's HTTP API JWT authorizer forwards an array-valued claim
+as a bracket-wrapped string, not a clean list or CSV.** A Cognito token's `cognito:groups: [
+"customers"]` arrives at every Lambda as the literal string `"[customers]"` (or
+`"[admin, customers]"` for two groups) in `event.requestContext.authorizer.jwt.claims`. Every
+service's `auth.py` parsed this with `value.split(",")` — correct for two-or-more groups, but for
+the single-group case (every real account created in this project so far) there is no comma to
+split on, so the brackets stay attached: `groups()` returns `{"[customers]"}`, and
+`"customers" not in groups(claims)` is `True` for a perfectly valid token. `require_customer` and
+`require_admin` therefore silently rejected every real Cognito sign-in, in production, since the
+JWT authorizer was first wired up — this was never a COD defect, it is why *no* real order of any
+kind had ever landed in the live table, and it would have blocked every real admin action too.
+Confirmed by decoding the browser's live session-storage token in the console and cross-checking
+`cognito:groups` against the CloudWatch-observed 403s before touching any code.
+
+**Why no test caught this:** `AUTH_TEST_MODE` (every service) short-circuits `claims_from_request`
+with a hardcoded Python list — `{"cognito:groups": ["admin", "customers"]}` — never exercising the
+string shape API Gateway actually sends. CP-021's "still open" note about zero automated coverage
+for `require_admin`/`require_customer` predicted exactly this class of gap.
+
+**Fix, identical across `order-service`, `inventory-service`, `product-service`,
+`payment-service`:** `groups()` now strips a leading/trailing `[`/`]` before splitting on `,` and
+strips whitespace from each resulting group, handling the bracketed single- and multi-group forms
+and leaving the real-list branch (`AUTH_TEST_MODE`) untouched. A new `tests/test_auth.py` per
+service (4 tests each: bracketed single group, bracketed multiple groups, a real list still
+works, a missing claim is empty) exercises `groups()` directly against the exact string shape API
+Gateway sends — the coverage gap CP-021 named is now closed for this function specifically.
+
+**A second, pre-existing bug surfaced by adding those test files, unrelated to the fix itself:**
+each service's real test file (`test_orders.py`, etc.) sets `DYNAMODB_ENDPOINT` and the test table
+names via a **module-level `os.environ` assignment before importing `app.main`** — a pattern that
+only works if that file is the first thing pytest imports. `test_auth.py` sorts alphabetically
+ahead of it, imports `app.auth` (which imports `app.config`) first, and Python caches the module —
+so `app.config`'s values froze against the real, unset environment before the existing file's own
+assignments ever ran, and the full suite failed with `botocore.exceptions.ClientError` against a
+nonexistent `Orders`/`Products`/etc. table in real AWS (not against real production data — the
+literal default table names don't match the deployed `smartretailx-dev-*` ones, so this failed
+safely, but it was still genuinely trying to reach real AWS). Fixed by mirroring the same
+environment-variable assignment at the top of each `test_auth.py`, matching its sibling file
+exactly. All four suites now pass in full: order-service 39/39, inventory-service 24/24,
+product-service 21/21, payment-service 18/18 — these are the current, accurate counts; earlier
+sections of this record understate them because they predate both this fix's tests and some
+already-existing batch tests. **This import-order fragility is a standing risk for any future
+test file in any of these four `tests/` directories** and is worth a proper `conftest.py`
+fixture instead, tracked under CP-047.
+
+**Rebuild and redeploy hit an unrelated, third issue.** `docker build` (current Docker Desktop
+defaults) produces an OCI attestation/provenance manifest list; `aws lambda update-function-code`
+rejects it outright (`InvalidParameterValueException: ... media type ... is not supported`).
+Fixed by adding `--provenance=false` to the build command for all four images — a build-tooling
+regression, not an application bug, but one that would have silently blocked every future deploy
+until diagnosed.
+
+**Terraform drift discovered and closed in the same pass.** `lambda_http_services.tf` already
+contained digest-pinning (`data.aws_ecr_image` resolving `:latest` to a digest, `image_uri` built
+from `@sha256:...`) — but `terraform apply` had never actually been run against that code. The
+live Lambdas were still on the plain, unpinned `:latest` reference, meaning every prior
+`docker push` to `:latest` had no recorded effect on the deployed function until someone happened
+to run `aws lambda update-function-code` by hand, with no signal either way if that step was
+forgotten. `terraform plan` confirmed this precisely (4 in-place changes, `image_uri` moving from
+`:latest` to the pinned digest, matching exactly what had just been deployed via the CLI) and
+`terraform apply` adopted the pin for all four HTTP-service Lambdas. This does not make a forgotten
+deploy impossible — a `terraform apply` step after every push is still required — but it makes a
+forgotten deploy **visible**: `terraform plan` now shows a real diff instead of nothing at all.
+
+**A related frontend gap closed alongside this:** Cognito ID tokens here are valid 60 minutes, and
+the frontend had no refresh-token logic and no expiry detection during an active session —
+`cognito.js` only checked `exp` when a page loaded. A token expiring mid-session produced a
+confusing bare `401` while the header kept showing the user as signed in. Added `isTokenExpired()`
+(`auth/cognito.js`), a pre-flight check in `api/http.js` that skips the doomed request entirely and
+surfaces "Your session has expired. Please sign in again." instead of a raw failure, and a
+`smartretailx:session-expired` event that `AuthProvider` listens for to clear session state
+immediately rather than waiting for a reload. This is the cheaper of the two options discussed
+(detect-and-prompt, not silent background renewal via the refresh token Cognito already issues) —
+the proper fix (silent renewal) remains open.
+
+**Verified end to end, not just deployed:** all four rebuilt images were confirmed via matching
+`CodeSha256` on each Lambda; a live cash-on-delivery checkout was placed against the deployed site
+post-fix and confirmed to appear correctly on My Orders. CP-021 and CP-024 can be moved from
+"fixed but unconfirmed" to genuinely live-verified on this basis.
+
+## Update — 2026-08-17/18: admin Customers & Orders page, delivery-status tracking, and a real
+Scan-to-GSI correction caught before it shipped
+
+**Two new order-service capabilities, both added because the existing surface genuinely could not
+do this, not as a convenience refactor.** `GET /api/v1/orders` was already deliberately hard-locked
+to the caller's own Cognito `sub` (a data-protection decision, not an oversight — see its own
+docstring) — there was no way, even for an admin, to list every customer's orders. And the saga's
+own `status` field (CONFIRMED/REJECTED/FAILED/etc.) is a financial correctness state machine
+driven entirely by the checkout process; hand-editing it would be dangerous, so there was
+similarly no way to record fulfilment progress ("has this shipped yet") at all. Two new,
+separately-gated endpoints close both gaps:
+
+- **`GET /api/v1/orders/admin`** (admin-only) — every order across every customer, paginated.
+- **`PATCH /api/v1/orders/{order_id}/delivery-status`** (admin-only) — a new `delivery_status`
+  field on `Order` (`PROCESSING` / `SHIPPED` / `OUT_FOR_DELIVERY` / `DELIVERED`), deliberately
+  *not* a conditional state-machine transition like the saga's own `set_status` — an admin can
+  set it to any value at any time, the same way a real courier dashboard lets staff correct a
+  mis-click. The only guard is that the order must actually be `CONFIRMED` or
+  `PENDING_ON_DELIVERY` first — there is nothing to ship for a `REJECTED` order.
+
+**The first implementation of the admin listing was wrong, and the user caught it before it
+shipped.** The initial `list_all_orders()` was a plain `table.scan()` — it deployed, worked, and
+even had an honest code comment flagging the tradeoff ("costs proportional to the whole table on
+every page ... fine at this project's data volume and wrong at real scale"). That comment being
+*honest* is not the same as the design being *right*, and the user asked directly: "why are we
+scanning the whole table, is that how it works in the industry?" It is not. The fix: a new GSI,
+`all-orders-index`, keyed on a **constant partition key** (`order_bucket`, set to the literal
+string `"ALL"` on every order at write time) with `created_at` as the sort key — a standard,
+documented DynamoDB pattern for a "list everything, newest first" access pattern that the key
+schema otherwise has no way to express. `list_all_orders()` now issues a `Query` against that
+index instead of a `Scan`: cost proportional to what is actually returned, not to the whole table.
+The tradeoff this introduces is the well-known one for a single constant key — every order lands
+in the same GSI partition, which is fine at this project's volume and would need bucketing (e.g.
+by month) to stay healthy at real e-commerce scale. That is a scale problem to solve later, not a
+correctness problem shipped today.
+
+**GSIs are sparse, which mattered for the existing orders.** The 11 pre-existing orders in the
+live table had no `order_bucket` attribute at all — it didn't exist when they were written, and
+DynamoDB does not retroactively backfill a GSI's key onto old items. Without action they would
+have silently vanished from the new admin view despite still existing in the table. Backfilled all
+11 with a one-time `UpdateItem` loop run under the developer's own AWS credentials (not a standing
+Lambda permission — the Lambda's role was never granted `Scan`, and the reverted grant from the
+first attempt was removed again once the GSI made it unnecessary). Every order created from this
+point on gets `order_bucket` set automatically inside `create_order()`, so no further backfill is
+needed.
+
+**Also fixed in the same window, unrelated to the above:**
+- **No `<img>` tag anywhere had an `onError` fallback.** Found while investigating a real report of
+  a broken product image — the actual cause was a data-entry mistake (`image_url` pointed at a
+  stockcake.com *webpage*, not an image file), but the deeper gap was that ANY bad URL rendered a
+  permanent broken-image icon instead of falling back to the placeholder. New shared
+  `ProductImage.jsx` component (tracks a `failed` state via `onError`, falls back to
+  `ImagePlaceholder`) replaced five separate inline `image_url ? <img/> : <Placeholder/>` blocks
+  across `ProductCard`, `ProductDetail`, `CartPage`, and `AdminPanel` (table thumbnail and editor
+  preview).
+- **Admin product table gained a Stock column**, mirroring the exact per-row `fetchStock` pattern
+  `ProductCard.jsx` already used for its out-of-stock badge — no backend change needed.
+- **Navigation naming collision fixed before it shipped confusing:** the existing "Products &
+  orders" admin nav label was renamed to plain "Products" once "Customers & orders" existed as a
+  separate page — the original label's "orders" only ever referred to the narrow
+  needs-reconciliation panel, not a general order browser, and having two nav items both claim
+  "orders" was flagged as confusing by the user before any real use.
+- **The admin Customers & Orders page identifies customers by `contact_email`/`contact_phone`
+  already captured at checkout** (`OrderCreate`, added for the earlier checkout-form work),
+  grouped client-side by `customer_id`. Deliberately not a live Cognito `admin_get_user` lookup —
+  that would need new IAM permissions this Lambda doesn't have and doesn't need, since the data
+  already exists on every order record. There is still no separate customer-profile store
+  (CP-033), so this is the customer's order history, not a full profile.
+
+## Update — 2026-08-18: CI (CP-018) built, pushed, and verified green on a real GitHub Actions run
+
+**`.github/workflows/ci.yml` — five jobs, `permissions: contents: read`, deliberately given no AWS
+credentials at all: it can verify a change is safe, it cannot deploy anything.** A per-service
+backend test matrix (`product-service`, `inventory-service`, `payment-service`, `order-service`)
+runs `pytest` against a real DynamoDB Local service container, not a mock. A frontend job runs
+`npm run build`. A Terraform job runs `terraform fmt -check` and `terraform validate` — no `plan`,
+since that would require real AWS credentials in CI, a deliberate scope boundary rather than a
+gap. A Docker job builds all five deployable images (the four services plus `outbox-relay`)
+without pushing anywhere, using `--provenance=false` — the exact flag this project only discovered
+the hard way earlier the same day, when Docker's default attestation-manifest output turned out to
+be rejected outright by `aws lambda update-function-code`. Finally, a dependency-security job runs
+`pip-audit` per backend service and `npm audit` for the frontend.
+
+**Not written blind — reviewed critically before the first push, and caught a real bug.**
+`product-service/requirements.txt` and `inventory-service/requirements.txt` were encoded as
+UTF-16, not UTF-8/ASCII like the other three services' files (`file` confirmed it directly:
+"Unicode text, UTF-16, little-endian"). `pip install -r requirements.txt` on the Ubuntu runner
+expects UTF-8; fed a UTF-16 file it would very likely have failed to parse, breaking both
+services' test jobs on the first real run. This is the well-known PowerShell `Out-File`/
+`Set-Content` gotcha — something wrote or last edited those two specific files on Windows without
+specifying UTF-8 encoding. Converted both to UTF-8 (verified via `file` afterward, and confirmed
+`pip install -r requirements.txt` parses cleanly against the real venv) before anything was
+pushed.
+
+**The first real CI run did fail once, on something genuine, not a workflow bug.** `npm audit
+--audit-level=high` failed on an advisory in `esbuild` (GHSA-67mh-4wv8-2f99) — an issue in
+`vite`'s bundled dev server accepting cross-origin requests it shouldn't, exploitable only if a
+developer has `npm run dev` running while visiting a malicious site at the same time. Both `vite`
+and `esbuild` are `devDependencies` — build-time tooling, never present in the actual production
+`dist/` output that reaches S3/CloudFront. The audit command was corrected to
+`npm audit --omit=dev --audit-level=high`, scoping the security gate to what is genuinely shipped
+to users rather than the tools used to build it — a deliberate correction of what the check
+measures, not a loosening of the check's standard: a real high-severity vulnerability in an
+actual runtime dependency (React, etc.) would still fail the build. Verified locally (0
+vulnerabilities with the flag, versus the same 2 findings without it) before pushing the fix.
+
+**Confirmed, not assumed: the CI environment does not exactly match local development.** Checked
+directly rather than taken on faith — CI pins Python to exactly `3.11`; every venv actually used
+for local testing throughout this project runs `3.13.1`. CI does not pin an npm version at all, so
+it uses whatever ships bundled with the runner's Node 22 install (typically ~10.x); local npm is
+`11.1.0`, evidently upgraded independently of the Node installer at some point. Node's own major
+version does match (`22` in both). Neither Python nor npm discrepancy has caused an observed
+failure, and this codebase's dependencies (FastAPI, boto3, Pydantic v2; a lockfile-pinned frontend
+tree) support both ranges — so this is recorded as a known, real gap rather than silently assumed
+to be identical, not treated as something requiring an immediate fix.
+
+**The remaining CI annotations after all of the above (12 "Node.js 20 is deprecated" warnings)
+are infrastructure noise, not project findings.** They describe the Node.js runtime GitHub uses to
+execute the *actions themselves* (`actions/checkout@v4`, `actions/setup-node@v4`, etc.) — entirely
+separate from this project's own Node version, which the workflow explicitly pins to `22` and is
+unaffected. They will resolve on their own once the action authors publish new major versions
+built against the newer runtime.
