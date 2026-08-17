@@ -17,8 +17,10 @@ export function createOrder({
   return request("/api/v1/orders", { method: "POST", idToken, body });
 }
 
-export function fetchMyOrders(idToken) {
-  return request("/api/v1/orders", { idToken });
+export function fetchMyOrders({ limit = 20, cursor, idToken } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+  return request(`/api/v1/orders?${params.toString()}`, { idToken });
 }
 
 export function fetchAttentionOrders(idToken) {

@@ -4,21 +4,48 @@ import ErrorState from "./ErrorState.jsx";
 import LoadingState from "./LoadingState.jsx";
 import { formatPrice } from "../lib/currency.js";
 
+const CONFIRMATION_STATUSES = new Set(["CONFIRMED", "PENDING_ON_DELIVERY"]);
+
 export default function OrdersPage({ idToken, latestOrder }) {
   const [orders, setOrders] = useState([]);
+  const [cursor, setCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Re-shows only when a genuinely NEW order arrives (keyed on order_id, see
+  // the effect below) — revisiting this page later with the same stale
+  // latestOrder won't bring a dismissed banner back.
+  const [showConfirmation, setShowConfirmation] = useState(Boolean(latestOrder));
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetchMyOrders(idToken)
-      .then((page) => setOrders(page.items || []))
+    fetchMyOrders({ idToken })
+      .then((page) => {
+        setOrders(page.items || []);
+        setCursor(page.next_cursor || null);
+      })
       .catch((loadError) => setError(loadError.message))
       .finally(() => setLoading(false));
   }, [idToken]);
 
-  useEffect(() => { load(); }, [load, latestOrder?.order_id]);
+  useEffect(() => {
+    load();
+    setShowConfirmation(Boolean(latestOrder));
+  }, [load, latestOrder?.order_id]);
+
+  async function loadMore() {
+    setLoadingMore(true);
+    try {
+      const page = await fetchMyOrders({ cursor, idToken });
+      setOrders((current) => [...current, ...(page.items || [])]);
+      setCursor(page.next_cursor || null);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   if (loading) return <LoadingState label="Loading your orders…" />;
   if (error) return <ErrorState message={error} onRetry={load} />;
@@ -27,11 +54,35 @@ export default function OrdersPage({ idToken, latestOrder }) {
     <section>
       <p className="text-sm font-medium text-brand-700">Customer account</p>
       <h2 className="mt-1 text-3xl font-bold tracking-tight text-stone-900">Your orders</h2>
+      {showConfirmation && latestOrder && CONFIRMATION_STATUSES.has(latestOrder.status) && (
+        <div className="mt-4 flex items-start justify-between gap-3 rounded-xl border border-brand-200 bg-brand-50 p-4 text-sm text-brand-800">
+          <p>
+            <strong>Order placed!</strong>{" "}
+            {latestOrder.status === "PENDING_ON_DELIVERY"
+              ? "Pay in cash when it arrives."
+              : "Your payment was confirmed."}
+          </p>
+          <button onClick={() => setShowConfirmation(false)} className="shrink-0 font-medium text-brand-700 hover:text-brand-900">
+            Dismiss
+          </button>
+        </div>
+      )}
       {orders.length === 0 ? (
         <p className="mt-8 rounded-xl border border-dashed border-stone-300 bg-white p-10 text-center text-stone-500">You have not placed an order yet.</p>
       ) : (
         <div className="mt-6 space-y-4">
           {orders.map((order) => <OrderCard key={order.order_id} order={order} />)}
+        </div>
+      )}
+      {cursor && (
+        <div className="mt-6 flex justify-center">
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="rounded-lg border border-brand-600 px-6 py-2.5 text-sm font-medium text-brand-700 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
         </div>
       )}
     </section>

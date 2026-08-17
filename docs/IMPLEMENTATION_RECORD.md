@@ -1907,3 +1907,24 @@ anywhere — React 18's default behaviour for an uncaught render error is to unm
 tree with no visible signal, which is indistinguishable from a blank page and was actively making
 this class of bug harder to diagnose than it needed to be. Both fixes are built and tested
 (35/35 order-service tests, clean frontend build) but not yet redeployed as of this writing.
+
+## Update — second frontend round, and a git incident, both recorded in `CHECKPOINT_STATUS.md`
+
+Two things happened after the amendment above that are recorded in full detail in
+`CHECKPOINT_STATUS.md` (discrepancies 7 and 9) rather than duplicated here:
+
+1. **`main` was briefly broken** by two `git add .` runs from the repo root picking up local
+   package-manager caches (`.pnpm-store/`, `frontend/.vite/`) that had no business being tracked;
+   9 real files (`index.html`, `package.json`, three base components, and others) were deleted
+   from disk somewhere between those commits and that deletion got committed as fact. Restored,
+   confirmed with a real `npm run build` from a wiped `dist/`, and both directories are now
+   gitignored at the root and `frontend/` level so it can't recur.
+2. **The order-service model fix and error boundary above did get redeployed** — the Lambda's
+   `CodeSha256` and the S3 bucket's most recent object both carry a timestamp consistent with
+   that. No one has re-tested the live admin dashboard since, so this is fixed-and-deployed but
+   not yet fixed-and-*confirmed*.
+3. **A substantial second round of frontend work — cart icon/badge, order pagination, out-of-stock
+   indicators, grid-level add-to-cart, a toast notification, checkout images/totals, sign-in-mid-
+   checkout draft persistence, and a consistent status-page system — exists only locally.** All of
+   it was verified piece by piece (clean builds throughout), but as of this writing it is neither
+   committed (`git status` shows 20 files under `frontend/src/`) nor confirmed deployed.

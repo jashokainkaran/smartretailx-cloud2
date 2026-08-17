@@ -4,7 +4,7 @@ import ProductCard from "./ProductCard.jsx";
 import LoadingState from "./LoadingState.jsx";
 import ErrorState from "./ErrorState.jsx";
 
-export default function ProductGrid({ onSelectProduct, idToken }) {
+export default function ProductGrid({ onSelectProduct, onAddToCart, idToken }) {
   const [products, setProducts] = useState([]);
   const [cursor, setCursor] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +57,8 @@ export default function ProductGrid({ onSelectProduct, idToken }) {
             key={product.id}
             product={product}
             onSelect={onSelectProduct}
+            onAddToCart={onAddToCart}
+            idToken={idToken}
           />
         ))}
       </div>

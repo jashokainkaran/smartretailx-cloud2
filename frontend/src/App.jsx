@@ -8,12 +8,30 @@ import AdminPanel from "./components/AdminPanel.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import CustomerNavbar from "./components/CustomerNavbar.jsx";
 import AdminNavbar from "./components/AdminNavbar.jsx";
+import AccessDenied from "./components/AccessDenied.jsx";
+import NotFound from "./components/NotFound.jsx";
+import Toast from "./components/Toast.jsx";
+import { consumeReturnRoute } from "./lib/checkoutDraft.js";
 
 const CART_KEY = "smartretailx.cart";
+const KNOWN_ROUTES = ["catalogue", "cart", "orders", "admin", "dashboard"];
 
+const PAGE_TITLES = {
+  catalogue: "Shop",
+  cart: "Your basket",
+  orders: "Your orders",
+  dashboard: "Dashboard",
+  admin: "Products & orders",
+  notfound: "Page not found",
+};
+
+// Distinct from "no hash yet" (a fresh landing, defaults to the shop) —
+// an actual unrecognised hash (a stale bookmark, a typo) gets its own
+// "Page not found" state instead of silently pretending nothing's wrong.
 function routeFromHash() {
   const route = window.location.hash.replace("#", "");
-  return ["catalogue", "cart", "orders", "admin", "dashboard"].includes(route) ? route : "catalogue";
+  if (!route) return "catalogue";
+  return KNOWN_ROUTES.includes(route) ? route : "notfound";
 }
 
 export default function App() {
@@ -24,7 +42,14 @@ export default function App() {
     catch { return []; }
   });
   const [latestOrder, setLatestOrder] = useState(null);
+  const [toast, setToast] = useState(null);
   const { status, error, user, idToken, isAdmin, signIn, signOut } = useAuth();
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     const onHashChange = () => { setSelectedProductId(null); setRoute(routeFromHash()); };
@@ -36,15 +61,32 @@ export default function App() {
     window.localStorage.setItem(CART_KEY, JSON.stringify(cart));
   }, [cart]);
 
+  useEffect(() => {
+    const page = selectedProductId ? "Product" : PAGE_TITLES[route] || "";
+    document.title = page || "SmartRetailX";
+  }, [route, selectedProductId]);
+
   function navigate(nextRoute) {
     window.location.hash = nextRoute;
   }
 
   useEffect(() => {
+    if (status !== "ready") return;
+
+    // Coming back from a mid-checkout sign-in detour takes priority over
+    // everything else here — including the admin auto-redirect below, on
+    // the reasoning that "finish what you were doing" beats "go to your
+    // usual landing page" for an account that happens to be both.
+    const returnRoute = consumeReturnRoute();
+    if (returnRoute) {
+      navigate(returnRoute);
+      return;
+    }
+
     // Only on a fresh landing with no route chosen yet — an admin who
     // deliberately clicks "View store" gets a real hash (#catalogue) and
     // this must not fight that choice on the next render.
-    if (status === "ready" && isAdmin && !window.location.hash) {
+    if (isAdmin && !window.location.hash) {
       navigate("dashboard");
     }
   }, [status, isAdmin]);
@@ -53,9 +95,13 @@ export default function App() {
     setCart((current) => {
       const existing = current.find((item) => item.id === product.id);
       if (existing) return current.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
-      return [...current, { id: product.id, name: product.name, price: product.price, quantity: 1 }];
+      return [...current, { id: product.id, name: product.name, price: product.price, image_url: product.image_url, quantity: 1 }];
     });
-    navigate("cart");
+    // No longer jumps straight to the cart page — that made adding a second
+    // or third item from the grid disruptive (you'd get yanked away every
+    // time). A toast confirms it instead; the basket link is right there
+    // in the nav whenever you're ready to check out.
+    setToast({ message: `${product.name} added to cart`, key: Date.now() });
   }
 
   function setQuantity(productId, rawQuantity) {
@@ -65,6 +111,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-stone-50">
+      <Toast message={toast?.message} key={toast?.key} />
       <header className="sticky top-0 z-10 border-b border-stone-200 bg-white/90 backdrop-blur relative">
         <div className="mx-auto max-w-7xl px-6 py-4">
           <div className="flex items-center justify-between gap-4">
@@ -127,7 +174,7 @@ export default function App() {
             idToken={idToken}
           />
         ) : route === "catalogue" ? (
-          <ProductGrid onSelectProduct={setSelectedProductId} idToken={idToken} />
+          <ProductGrid onSelectProduct={setSelectedProductId} onAddToCart={addToCart} idToken={idToken} />
         ) : route === "cart" ? (
           <CartPage
             cart={cart}
@@ -145,14 +192,12 @@ export default function App() {
           <Dashboard idToken={idToken} onNavigate={navigate} />
         ) : route === "admin" && isAdmin ? (
           <AdminPanel idToken={idToken} />
+        ) : route === "notfound" ? (
+          <NotFound onGoHome={() => navigate("catalogue")} />
         ) : (
           <AccessDenied onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))} />
         )}
       </main>
     </div>
   );
-}
-
-function AccessDenied({ onSignIn }) {
-  return <div className="rounded-xl border border-dashed border-stone-300 bg-white px-6 py-20 text-center"><h2 className="text-xl font-bold text-stone-900">Sign-in required</h2><p className="mt-2 text-sm text-stone-500">Please sign in to access this area.</p><button onClick={onSignIn} className="mt-5 rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white">Sign in</button></div>;
 }

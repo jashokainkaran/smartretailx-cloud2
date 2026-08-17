@@ -1,4 +1,5 @@
 import { Component } from "react";
+import StatusPage from "./StatusPage.jsx";
 
 // Without this, an uncaught error anywhere in the render tree unmounts the
 // ENTIRE app (React 18's default) — a blank white page with no clue why.
@@ -22,17 +23,14 @@ export default class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div className="mx-auto max-w-lg px-6 py-24 text-center">
-          <h1 className="text-xl font-bold text-stone-900">Something went wrong</h1>
-          <p className="mt-2 text-sm text-stone-500">
-            {this.state.error.message || "An unexpected error occurred."}
-          </p>
-          <button
-            onClick={() => window.location.assign(window.location.pathname)}
-            className="mt-5 rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-          >
-            Reload
-          </button>
+        <div className="mx-auto max-w-lg px-6 py-16">
+          <StatusPage
+            variant="warning"
+            tone="warning"
+            title="Something went wrong"
+            message={this.state.error.message || "An unexpected error occurred. Reloading usually fixes it."}
+            action={{ label: "Reload", onClick: () => window.location.assign(window.location.pathname) }}
+          />
         </div>
       );
     }

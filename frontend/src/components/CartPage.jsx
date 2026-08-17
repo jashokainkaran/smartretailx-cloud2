@@ -1,11 +1,26 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createOrder } from "../api/orders.js";
 import { formatPrice } from "../lib/currency.js";
 import { validateEmail, validatePhone, validateRequired } from "../lib/validation.js";
 import CardFields, { deriveMockToken, validateCard } from "./CardFields.jsx";
+import ImagePlaceholder from "./ImagePlaceholder.jsx";
+import { consumeCheckoutDraft, saveCheckoutDraft } from "../lib/checkoutDraft.js";
 
 const blankAddress = { recipient_name: "", street: "", city: "", postal_code: "", country: "" };
 const blankCard = { number: "", expiry: "", cvv: "" };
+
+const FIELD_LABELS = {
+  recipient_name: "Recipient name",
+  street: "Street address",
+  city: "City",
+  postal_code: "Postal code",
+  country: "Country",
+  contact_email: "Email",
+  contact_phone: "Phone number",
+  number: "Card number",
+  expiry: "Card expiry",
+  cvv: "CVV",
+};
 
 function validateAll(form) {
   return {
@@ -37,6 +52,14 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
+  // Restores whatever was typed before the sign-in redirect, if anything —
+  // one-time, consumed on read, so it can't resurrect a stale draft on a
+  // later, unrelated visit to this page.
+  useEffect(() => {
+    const draft = consumeCheckoutDraft();
+    if (draft) setForm((current) => ({ ...current, ...draft }));
+  }, []);
+
   const total = cart.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0);
   const errors = validateAll(form);
   const showError = (field) => (touched[field] || submitAttempted) && errors[field];
@@ -51,12 +74,21 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
 
   async function checkout(event) {
     event.preventDefault();
+    setSubmitAttempted(true);
+    if (hasErrors(errors)) return;
+
     if (!idToken) {
+      // Only reached once the form is actually valid — no point taking the
+      // sign-in detour for something that wasn't ready to submit anyway.
+      saveCheckoutDraft({
+        address: form.address,
+        contactEmail: form.contactEmail,
+        contactPhone: form.contactPhone,
+        paymentMethod: form.paymentMethod,
+      }, "cart");
       onSignIn();
       return;
     }
-    setSubmitAttempted(true);
-    if (hasErrors(errors)) return;
 
     setSubmitting(true);
     setError(null);
@@ -91,6 +123,11 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
         <div className="mt-6 divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white">
           {cart.map((item) => (
             <div key={item.id} className="flex items-center gap-4 p-4">
+              {item.image_url ? (
+                <img src={item.image_url} alt={item.name} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
+              ) : (
+                <ImagePlaceholder className="h-16 w-16 shrink-0 rounded-lg" />
+              )}
               <div className="min-w-0 flex-1">
                 <p className="font-semibold text-stone-900">{item.name}</p>
                 <p className="text-sm text-stone-500">{formatPrice(item.price)} each</p>
@@ -108,79 +145,95 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
             </div>
           ))}
         </div>
+        <div className="mt-4 flex justify-between rounded-xl border border-stone-200 bg-white px-5 py-4 text-sm">
+          <span className="font-medium text-stone-600">Subtotal</span>
+          <strong className="text-stone-900">{formatPrice(total)}</strong>
+        </div>
       </section>
 
       <aside className="h-fit rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
         <h3 className="text-lg font-bold text-stone-900">Checkout</h3>
-        <div className="mt-4 flex justify-between border-b border-stone-200 pb-4 text-sm">
-          <span className="text-stone-600">Order total</span><strong>{formatPrice(total)}</strong>
-        </div>
+        {!idToken && (
+          <p className="mt-2 text-xs text-stone-500">
+            You can fill this in now — sign-in is only needed to place the order.
+          </p>
+        )}
 
         <form onSubmit={checkout} className="mt-5 space-y-5" noValidate>
+          {submitAttempted && hasErrors(errors) && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+              <p className="font-medium">
+                {Object.values(errors).filter(Boolean).length} field{Object.values(errors).filter(Boolean).length === 1 ? "" : "s"} need{Object.values(errors).filter(Boolean).length === 1 ? "s" : ""} your attention:
+              </p>
+              <ul className="mt-1 list-inside list-disc">
+                {Object.entries(errors).filter(([, msg]) => msg).map(([field]) => (
+                  <li key={field}>{FIELD_LABELS[field] || field}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <fieldset className="space-y-3">
             <legend className="text-sm font-semibold text-stone-800">Delivery address</legend>
             <TextField
-              label="Recipient name" value={form.address.recipient_name}
+              label="Recipient name" value={form.address.recipient_name} autoComplete="name"
               onChange={(v) => updateAddress("recipient_name", v)}
               onBlur={() => touch("recipient_name")} error={showError("recipient_name") && errors.recipient_name}
             />
             <TextField
-              label="Street address" value={form.address.street}
+              label="Street address" value={form.address.street} autoComplete="street-address"
               onChange={(v) => updateAddress("street", v)}
               onBlur={() => touch("street")} error={showError("street") && errors.street}
             />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <TextField
-                label="City" value={form.address.city}
+                label="City" value={form.address.city} autoComplete="address-level2"
                 onChange={(v) => updateAddress("city", v)}
                 onBlur={() => touch("city")} error={showError("city") && errors.city}
               />
               <TextField
-                label="Postal code" value={form.address.postal_code}
+                label="Postal code" value={form.address.postal_code} autoComplete="postal-code"
                 onChange={(v) => updateAddress("postal_code", v)}
                 onBlur={() => touch("postal_code")} error={showError("postal_code") && errors.postal_code}
               />
             </div>
             <TextField
-              label="Country" value={form.address.country}
+              label="Country" value={form.address.country} autoComplete="country-name"
               onChange={(v) => updateAddress("country", v)}
               onBlur={() => touch("country")} error={showError("country") && errors.country}
             />
           </fieldset>
 
-          <fieldset className="space-y-3">
+          <fieldset className="space-y-3 border-t border-stone-100 pt-5">
             <legend className="text-sm font-semibold text-stone-800">Contact details</legend>
             <TextField
-              label="Email" type="email" value={form.contactEmail}
+              label="Email" type="email" value={form.contactEmail} autoComplete="email"
               onChange={(v) => setForm((c) => ({ ...c, contactEmail: v }))}
               onBlur={() => touch("contact_email")} error={showError("contact_email") && errors.contact_email}
             />
             <TextField
-              label="Phone number" type="tel" value={form.contactPhone}
+              label="Phone number" type="tel" value={form.contactPhone} autoComplete="tel"
               onChange={(v) => setForm((c) => ({ ...c, contactPhone: v }))}
               onBlur={() => touch("contact_phone")} error={showError("contact_phone") && errors.contact_phone}
             />
           </fieldset>
 
-          <fieldset className="space-y-3">
-            <legend className="text-sm font-semibold text-stone-800">Payment</legend>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-sm text-stone-700">
-                <input
-                  type="radio" name="payment_method" value="card"
-                  checked={form.paymentMethod === "card"}
-                  onChange={() => setForm((c) => ({ ...c, paymentMethod: "card" }))}
-                />
-                Card
-              </label>
-              <label className="flex items-center gap-2 text-sm text-stone-700">
-                <input
-                  type="radio" name="payment_method" value="cash_on_delivery"
-                  checked={form.paymentMethod === "cash_on_delivery"}
-                  onChange={() => setForm((c) => ({ ...c, paymentMethod: "cash_on_delivery" }))}
-                />
-                Cash on delivery
-              </label>
+          <fieldset className="space-y-3 border-t border-stone-100 pt-5">
+            <legend className="text-sm font-semibold text-stone-800">Payment method</legend>
+            <div className="grid grid-cols-2 gap-3">
+              <PaymentOption
+                value="card"
+                selected={form.paymentMethod === "card"}
+                onSelect={() => setForm((c) => ({ ...c, paymentMethod: "card" }))}
+                label="Card"
+                icon={<CardGlyph />}
+              />
+              <PaymentOption
+                value="cash_on_delivery"
+                selected={form.paymentMethod === "cash_on_delivery"}
+                onSelect={() => setForm((c) => ({ ...c, paymentMethod: "cash_on_delivery" }))}
+                label="Cash on delivery"
+                icon={<CashGlyph />}
+              />
             </div>
 
             {form.paymentMethod === "card" ? (
@@ -200,6 +253,10 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
           </fieldset>
 
           {error && <p className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
+          <div className="flex items-center justify-between border-t border-stone-200 pt-4 text-sm">
+            <span className="text-stone-600">Total</span>
+            <strong className="text-lg text-stone-900">{formatPrice(total)}</strong>
+          </div>
           <button disabled={submitting} className="w-full rounded-md bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">
             {submitting ? "Placing order…" : idToken ? "Place order" : "Sign in to checkout"}
           </button>
@@ -209,7 +266,46 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
   );
 }
 
-function TextField({ label, value, onChange, onBlur, error, type = "text" }) {
+function PaymentOption({ value, selected, onSelect, label, icon }) {
+  return (
+    <label
+      className={`flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border-2 p-3 text-center text-sm font-medium transition ${
+        selected ? "border-brand-500 bg-brand-50 text-brand-800" : "border-stone-200 text-stone-600 hover:border-stone-300"
+      }`}
+    >
+      <input
+        type="radio"
+        name="payment_method"
+        value={value}
+        checked={selected}
+        onChange={onSelect}
+        className="sr-only"
+      />
+      {icon}
+      {label}
+    </label>
+  );
+}
+
+function CardGlyph() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+      <rect x="2.5" y="5" width="19" height="14" rx="2" />
+      <path d="M2.5 10h19" />
+    </svg>
+  );
+}
+
+function CashGlyph() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+function TextField({ label, value, onChange, onBlur, error, type = "text", autoComplete }) {
   return (
     <label className="block text-sm font-medium text-stone-700">
       {label}
@@ -218,7 +314,8 @@ function TextField({ label, value, onChange, onBlur, error, type = "text" }) {
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}
-        className={`mt-1 w-full rounded-md border px-3 py-2 ${error ? "border-red-400" : "border-stone-300"}`}
+        autoComplete={autoComplete}
+        className={`mt-1 w-full rounded-md border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-400 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
       />
       {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
     </label>

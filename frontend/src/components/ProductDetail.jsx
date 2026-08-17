@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { fetchProductById } from "../api/products.js";
+import { fetchStock } from "../api/inventory.js";
 import ImagePlaceholder from "./ImagePlaceholder.jsx";
 import LoadingState from "./LoadingState.jsx";
 import ErrorState from "./ErrorState.jsx";
@@ -7,6 +8,7 @@ import { formatPrice } from "../lib/currency.js";
 
 export default function ProductDetail({ productId, onBack, onAddToCart, idToken }) {
   const [product, setProduct] = useState(null);
+  const [stock, setStock] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -22,6 +24,19 @@ export default function ProductDetail({ productId, onBack, onAddToCart, idToken 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStock(null);
+    fetchStock(productId, idToken)
+      .then((result) => { if (!cancelled) setStock(result); })
+      .catch((err) => {
+        // A 404 means no inventory record exists — treated as zero
+        // available, same as ProductCard. Other failures are left alone.
+        if (!cancelled && err.status === 404) setStock({ available_quantity: 0 });
+      });
+    return () => { cancelled = true; };
+  }, [productId, idToken]);
 
   return (
     <div>
@@ -70,9 +85,15 @@ export default function ProductDetail({ productId, onBack, onAddToCart, idToken 
             <p className="leading-relaxed text-stone-600">
               {product.description}
             </p>
+            {stock && (
+              <p className={`text-sm font-medium ${stock.available_quantity > 0 ? "text-stone-500" : "text-red-600"}`}>
+                {stock.available_quantity > 0 ? `${stock.available_quantity} in stock` : "Out of stock"}
+              </p>
+            )}
             <button
               onClick={() => onAddToCart(product)}
-              className="mt-4 w-fit rounded-md bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-700"
+              disabled={stock ? stock.available_quantity <= 0 : false}
+              className="mt-4 w-fit rounded-md bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400"
             >
               Add to basket
             </button>
