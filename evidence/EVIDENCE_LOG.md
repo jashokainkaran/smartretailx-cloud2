@@ -53,6 +53,19 @@ the top right. A screenshot of the wrong region proves nothing.
 | 24 | `events/01-event-bus-rules.png` | EventBridge bus and its rules | 4 | ☐ |
 | 25 | `events/02-sqs-queue-and-dlq.png` | The queue with its DLQ redrive at maxReceiveCount 3 | 5 | ☐ |
 
+### Network and edge (applied this session, 2026-08-15)
+
+| # | Filename | What it must show | Task | Done |
+|---|---|---|---|---|
+| 37 | `network/01-vpc-and-subnets.png` | VPC console → Your VPCs (`smartretailx-dev-vpc`, `10.0.0.0/16`) and Subnets — 4 subnets, `Tier`/`Role`/`Services` tags visible | 1, 3 | ☐ |
+| 38 | `network/02-route-tables.png` | Private route table — **no `0.0.0.0/0` route**, only local + the DynamoDB endpoint; public route table **with** the IGW route, side by side | 3 | ☐ |
+| 39 | `network/03-security-groups.png` | `smartretailx-dev-lambda-sg` — Inbound rules tab **empty**, Outbound showing only the two 443 rules | 3 | ☐ |
+| 40 | `network/04-vpc-endpoints.png` | Both endpoints — Gateway (DynamoDB) and Interface (events) — both `Available` | 3 | ☐ |
+| 41 | `network/05-flow-logs.png` | VPC → Flow logs tab, `Active`, destination the CloudWatch log group | 3 | ☐ |
+| 42 | `waf/01-web-acl-rules.png` | WAF web ACL rules — common rule set, known-bad-inputs, per-IP rate limit 2000, attached to the CloudFront distribution | 3 | ☐ |
+| 43 | `hosting/01-cloudfront-distribution.png` | CloudFront distribution — both origins (S3 via OAC, API Gateway on `/api/*`) | 1, 3 | ☐ |
+| 44 | `hosting/02-s3-bucket-private.png` | S3 bucket → Permissions — all four public-access-block toggles **On**; Properties — versioning **Enabled** | 3 | ☐ |
+
 ### The saga, proven
 
 | # | Filename | What it must show | Task | Done |

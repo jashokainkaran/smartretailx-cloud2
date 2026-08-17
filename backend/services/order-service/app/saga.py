@@ -224,6 +224,63 @@ def _compensate_refund(order_id, customer_id, payment_id, reason):
     )
 
 
+def _confirm_cash_on_delivery(order_id: str, customer_id: str, line_items, total: Decimal):
+    """
+    No payment step for cash on delivery: confirm the reservation directly
+    and close the order out awaiting payment at the door.
+
+    If the confirm itself is rejected, there is nothing to refund — nothing
+    was ever charged — so this mirrors the card path's own _compensate_refund
+    at this exact step: no stock release is attempted here either. Per
+    ADR-040, reservations are not tracked per-order, so a release at this
+    specific point (after reserve already succeeded, at confirm) would
+    operate on an aggregate counter the saga cannot safely attribute back to
+    this order — the same reasoning the payment path already accepts here,
+    just with no payment to undo on top of it.
+    """
+    repository.set_status(order_id, states.RESERVING_STOCK, states.CONFIRMING_STOCK)
+    try:
+        clients.confirm_stock(line_items)
+    except DownstreamRejected as exc:
+        reason = str(exc.detail)
+        logger.info(
+            "order failed order_id=%s reason=%s (cash on delivery, nothing charged)",
+            order_id, reason,
+        )
+        return repository.set_status_and_publish(
+            order_id,
+            states.CONFIRMING_STOCK,
+            states.FAILED,
+            event_type="OrderFailed",
+            event_data={
+                "order_id": order_id,
+                "customer_id": customer_id,
+                "status": states.FAILED,
+                "reason": reason,
+            },
+            failure_reason=reason,
+        )
+    except DownstreamUnknown as exc:
+        return _stock_unknown(order_id, states.CONFIRMING_STOCK, str(exc))
+
+    logger.info("order confirmed (cash on delivery) order_id=%s", order_id)
+    return repository.set_status_and_publish(
+        order_id,
+        states.CONFIRMING_STOCK,
+        states.PENDING_ON_DELIVERY,
+        event_type="OrderConfirmed",
+        event_data={
+            "order_id": order_id,
+            "customer_id": customer_id,
+            "total": str(total),
+            "status": states.PENDING_ON_DELIVERY,
+            "items": [
+                {"product_id": i.product_id, "quantity": i.quantity} for i in line_items
+            ],
+        },
+    )
+
+
 def _payment_unknown(order_id: str, reason: str):
     """
     The payment call gave no usable answer. The card may or may not have
@@ -303,6 +360,10 @@ def run_checkout(request: OrderCreate):
         customer_id=request.customer_id,
         items=line_items,
         total=total,
+        shipping_address=request.shipping_address,
+        contact_email=request.contact_email,
+        contact_phone=request.contact_phone,
+        payment_method=request.payment_method,
         status=states.PENDING,
         created_at=now,
         updated_at=now,
@@ -321,6 +382,13 @@ def run_checkout(request: OrderCreate):
         return _reject(order_id, customer_id, str(exc.detail))
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.RESERVING_STOCK, str(exc))
+
+    # Cash on delivery takes no payment now, so the saga has nothing left to
+    # do but confirm the reservation. Branching here, right after the one
+    # step both payment methods share, keeps the two paths from silently
+    # drifting apart on how they reserve stock.
+    if request.payment_method == "cash_on_delivery":
+        return _confirm_cash_on_delivery(order_id, customer_id, line_items, total)
 
     # --- Step 2: take payment -------------------------------------------
     repository.set_status(order_id, states.RESERVING_STOCK, states.TAKING_PAYMENT)

@@ -2,11 +2,12 @@ import base64
 import json
 import logging
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
 from app import config, repository, saga
+from app.auth import claims_from_request, groups, require_admin, require_customer
 from app.clients import DownstreamUnknown
 from app.models import Order, OrderCreate, OrderPage
 from app.saga import BasketInvalid
@@ -38,7 +39,7 @@ def health():
 
 
 @app.post("/api/v1/orders", response_model=Order, status_code=201)
-def create_order(request: OrderCreate):
+def create_order(order_request: OrderCreate, claims: dict = Depends(require_customer)):
     """
     Run the checkout saga and return the order in its terminal state.
 
@@ -54,7 +55,12 @@ def create_order(request: OrderCreate):
     could not reach.
     """
     try:
-        return saga.run_checkout(request)
+        # A browser must never select another person's customer_id. Cognito's
+        # immutable subject is the ownership key, so the submitted value is
+        # intentionally replaced before the saga creates any record.
+        trusted_customer_id = order_request.customer_id if config.AUTH_TEST_MODE else claims["sub"]
+        trusted_request = order_request.model_copy(update={"customer_id": trusted_customer_id})
+        return saga.run_checkout(trusted_request)
     except BasketInvalid as exc:
         # 409 rather than 400: the request was well-formed, but the world
         # changed underneath it — the product was withdrawn or removed
@@ -73,7 +79,7 @@ def create_order(request: OrderCreate):
 # declaration order, so the parameterised route would otherwise swallow
 # "stuck" as an order id and return 404.
 @app.get("/api/v1/orders/stuck", response_model=list[Order])
-def list_stuck_orders():
+def list_stuck_orders(_claims: dict = Depends(require_admin)):
     """
     Every order requiring human reconciliation: PAYMENT_UNKNOWN,
     STOCK_UNKNOWN and COMPENSATION_FAILED.
@@ -89,26 +95,31 @@ def list_stuck_orders():
 
 
 @app.get("/api/v1/orders/{order_id}", response_model=Order)
-def get_order(order_id: str):
+def get_order(order_id: str, claims: dict = Depends(claims_from_request)):
     """Fetch a single order by id."""
     order = repository.get_order(order_id)
     if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if "admin" not in groups(claims) and order["customer_id"] != claims["sub"]:
+        # Return 404 rather than confirming that another customer's order ID
+        # exists. This limits order-ID probing as well as denying the read.
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 @app.get("/api/v1/orders", response_model=OrderPage)
 def list_orders(
-    customer_id: str,
+    customer_id: str | None = None,
     limit: int = Query(default=20, le=100, ge=1),
     cursor: str | None = None,
+    claims: dict = Depends(require_customer),
 ):
     """
-    A customer's orders, newest first, with cursor pagination.
+    The signed-in customer's orders, newest first, with cursor pagination.
 
-    customer_id is required rather than optional: there is no "list every
-    order in the system" endpoint, because that would be a full table Scan
-    and, once auth exists, a data-protection problem. Same cursor scheme as
+    The customer key is Cognito's subject claim, not a request query value.
+    There is no "list every order in the system" endpoint, because that would
+    be a full table Scan and a data-protection problem. Same cursor scheme as
     the Product service — an opaque base64 encoding of DynamoDB's
     LastEvaluatedKey, not an offset, because DynamoDB has no offset and
     emulating one costs more the deeper you page.
@@ -120,8 +131,9 @@ def list_orders(
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid cursor")
 
+    effective_customer_id = customer_id if config.AUTH_TEST_MODE and customer_id else claims["sub"]
     items, last_key = repository.list_orders_by_customer(
-        customer_id=customer_id, limit=limit, cursor=start_key
+        customer_id=effective_customer_id, limit=limit, cursor=start_key
     )
 
     next_cursor = None

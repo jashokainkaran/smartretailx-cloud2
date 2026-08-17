@@ -31,9 +31,13 @@ service, was understood, and was refused — all of our downstream 4xx
 responses come from conditional writes that either applied or did not.
 """
 
-import httpx
 import logging
 from decimal import Decimal
+
+import boto3
+import httpx
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 
 from app import config
 
@@ -67,14 +71,47 @@ def _detail(body, response):
     return response.text
 
 
+def _signed_request(request: httpx.Request) -> httpx.Response:
+    """Send an API Gateway request signed by this Lambda's IAM role."""
+    credentials = boto3.Session().get_credentials()
+    if credentials is None:
+        raise DownstreamUnknown("no AWS credentials available for internal API call")
+
+    frozen_credentials = credentials.get_frozen_credentials()
+    aws_request = AWSRequest(
+        method=request.method,
+        url=str(request.url),
+        data=request.content,
+        headers=dict(request.headers),
+    )
+    SigV4Auth(frozen_credentials, "execute-api", config.AWS_REGION).add_auth(aws_request)
+
+    # httpx sends the exact signed body and headers. The Order role is limited
+    # in Terraform to just these internal API operations.
+    signed_headers = dict(aws_request.headers.items())
+    with httpx.Client(timeout=config.DOWNSTREAM_TIMEOUT_SECONDS) as client:
+        return client.send(
+            httpx.Request(
+                method=request.method,
+                url=str(request.url),
+                headers=signed_headers,
+                content=request.content,
+            )
+        )
+
+
 def _request(method: str, url: str, **kwargs):
     try:
-        response = httpx.request(
-            method,
-            url,
-            timeout=config.DOWNSTREAM_TIMEOUT_SECONDS,
-            **kwargs,
-        )
+        request = httpx.Request(method, url, **kwargs)
+        if config.SIGN_DOWNSTREAM_REQUESTS:
+            response = _signed_request(request)
+        else:
+            response = httpx.request(
+                method,
+                url,
+                timeout=config.DOWNSTREAM_TIMEOUT_SECONDS,
+                **kwargs,
+            )
     except httpx.RequestError as exc:
         # Covers timeouts, DNS failures, refused and dropped connections.
         # We never saw a status line, so we know nothing about the outcome.

@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from mangum import Mangum
 from app.models import PaymentRequest, Payment
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
+from app.auth import require_admin
 import logging
 
 logging.basicConfig(
@@ -47,7 +48,7 @@ def create_payment(request: PaymentRequest, response: Response):
 
 
 @app.get("/api/v1/payments/{payment_id}", response_model=Payment)
-def get_payment(payment_id: str):
+def get_payment(payment_id: str, _claims: dict = Depends(require_admin)):
     """Fetch a single payment by id."""
     payment = repository.get_payment(payment_id)
     if payment is None:
@@ -56,7 +57,7 @@ def get_payment(payment_id: str):
 
 
 @app.post("/api/v1/payments/{payment_id}/refund", response_model=Payment)
-def refund_payment(payment_id: str):
+def refund_payment(payment_id: str, _claims: dict = Depends(require_admin)):
     """
     Refund a previously succeeded payment. Idempotent — refunding an
     already-refunded payment returns 200 with the existing record rather

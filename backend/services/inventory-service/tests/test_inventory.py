@@ -3,6 +3,7 @@ import os
 # Point the app at a SEPARATE test table BEFORE importing it.
 os.environ["INVENTORY_TABLE"] = "InventoryTest"
 os.environ["DYNAMODB_ENDPOINT"] = "http://localhost:8000"
+os.environ["AUTH_TEST_MODE"] = "true"
 
 import boto3
 import pytest

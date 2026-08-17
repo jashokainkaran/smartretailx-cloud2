@@ -2,8 +2,8 @@
 COMP60010 / ECDWA2
 
 Verified against the actual repository state (code, `terraform state list`, `git status`,
-`docs/IMPLEMENTATION_RECORD.md`) as of 2026-08-15, branch `feature/order-saga`, against the
-**final 45-checkpoint roadmap**. Where a checkpoint's own label ("IN PROGRESS", "NEXT") disagreed
+`docs/IMPLEMENTATION_RECORD.md`) as of 2026-08-17, branch `feature/order-saga`, against the
+**expanded 56-checkpoint roadmap**. Where a checkpoint's own label ("IN PROGRESS", "NEXT") disagreed
 with what's actually in the repo, the repo wins and the discrepancy is noted.
 
 Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
@@ -24,8 +24,6 @@ Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 | ✅ CP-008 | Terraform — ECR (scan-on-push, lifecycle) | in `terraform state list` |
 | ✅ CP-009 | Terraform — Lambda (relay + inventory consumer) | in `terraform state list`, both deployed |
 | ✅ CP-010 | Transactional outbox end-to-end, self-trigger guard | AWS-verified, `IMPLEMENTATION_RECORD.md` §3 |
-| ✅ CP-011 | Order Service + Saga | 9 states, rejected/unknown split, 26 tests, deployed and proven on AWS. Circuit breaker and price-change check deferred — see below. |
-| ✅ CP-014 | Terraform — Orders + Saga deployment | Order Lambda, `order_outbox` table and second relay all applied; CONFIRMED / FAILED / REJECTED proven against the deployed API. |
 | ✅ CP-015 | Terraform — API Gateway | HTTP API with 8 routes, `$default` stage, access logging, throttling, X-Ray. Built as HTTP API not REST — **ADR-041 owed**. |
 | ✅ CP-012 | Terraform — Network | VPC `10.0.0.0/16`, 2 private + 2 public subnets across 2 AZs, route tables, 2 security groups, 2 network ACLs, DynamoDB gateway endpoint, EventBridge interface endpoint, flow logs. No NAT gateway, by design. 6 of 7 Lambdas placed in private subnets. |
 | ✅ CP-029 | Terraform — Frontend hosting | S3 (private, versioned, encrypted) + CloudFront with OAC, `/api/*` second origin, SPA error rewrites. Bucket still empty — the React build is not yet uploaded. |
@@ -37,7 +35,11 @@ Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 
 | CP | Item | What's actually there | What's missing |
 |---|---|---|---|
-| 🟡 CP-011 | Order saga — the two named adds | Saga itself complete and deployed. | No price-changed-at-checkout comparison; no circuit breaker on the downstream HTTP calls (timeout exists, no failure-counter/trip logic). |
+| 🟡 CP-011 | Order saga — completion and live proof | Core saga, 9 states, and 26 local tests exist. | No price-changed-at-checkout comparison, no circuit breaker, and no recorded live API Gateway confirmation/decline proof. |
+| 🟡 CP-014 | Terraform — Orders + Saga deployment | Order Lambda, `order_outbox` table and second relay are applied. | Live CONFIRMED / FAILED / REJECTED proof through API Gateway remains outstanding. |
+| 🟡 CP-019 | Frontend — Customer flow | Catalogue, product detail, local basket, tokenised checkout and protected order-history views are implemented locally. A separate `CustomerNavbar`/`AdminNavbar` split replaced the single conditional nav. | Run the complete checkout journey against deployed services, add UI tests, then upload the production build to S3/CloudFront. |
+| 🟡 CP-021 | Cognito / RBAC | User pool, public SPA client, managed domain, `customers`/`admin` groups, automatic customer assignment, Hosted UI PKCE sign-in, the API Gateway JWT authorizer, and IAM-signed saga calls are applied. Two real bugs were found by testing the deployed admin panel (not by code review) and are now fixed **in code, not yet deployed**: (1) the frontend was sending the Cognito *access* token, which does not carry `cognito:groups` — every `require_admin`/`require_customer` check failed for every user regardless of actual role, confirmed live via CloudWatch access logs (`POST /api/v1/products` → 403 for an admin); fixed by sending the *ID* token instead. (2) `GET /api/v1/products?include_inactive=true` could never succeed because no API Gateway route attached the JWT authorizer to it; replaced with a dedicated `GET /api/v1/products/admin` route, not yet applied (`terraform plan` shows 1 pending resource). The previous "✅ Done, live-verified" status here was written before both bugs were found and has been withdrawn — see `IMPLEMENTATION_RECORD.md` §5 amendment. | Push a rebuilt `product-service` image, `terraform apply` the one pending route, then re-verify with a real admin sign-in against the deployed site (not local `npm run dev`). Separately: **zero automated test coverage exists for `require_admin`/`require_customer`/ownership checks** across all four services — every existing test bypasses auth via `AUTH_TEST_MODE`, which is exactly why bug (1) shipped past "76/76 tests passing." Worth at least one real 401/403 test per service before this is called done. |
+| 🟡 CP-022 | Frontend — Admin panel | Product create/edit/activate/deactivate (now a table with a thumbnail column, per-row Edit button, and a top-level "Add product" button instead of a dropdown-driven form), stock adjustments, stuck-order and payment/refund controls, a paginated ("Load more") product list, and a dedicated Dashboard landing page (product counts, orders-needing-attention) are implemented locally, with admins auto-redirected there on sign-in. | Blocked on the same CP-021 deployment gap above — the admin panel cannot be live-tested until the `/products/admin` route and its Lambda code are actually deployed. Add UI tests and deploy the production build. |
 
 ---
 
@@ -47,26 +49,23 @@ Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 |---|---|---|
 | ⬜ CP-013 | Terraform — KMS + Secrets | No `aws_kms_key`, no SSM SecureString usage. Leaves ADR-008 and ADR-019 unresolved — **on the NEVER CUT list**. |
 | ⬜ CP-017 | Correlation IDs + real health checks | Every service's `/health` returns `{"status": "ok"}` unconditionally — no DynamoDB reachability check. No `correlation_id` generation or propagation anywhere in `backend/`. **On the NEVER CUT list, and explicitly time-sensitive** ("cannot be retrofitted cheaply") — worth doing before CP-025's Notification service adds a fifth consumer to thread it through. |
-| ⬜ CP-018 | CI — GitHub Actions | No `.github/workflows/` in the repo (only inside `frontend/node_modules`, irrelevant). No `pip-audit`, no `terraform fmt`/`validate` check. |
-| ⬜ CP-019 | Frontend — Customer flow | `frontend/src/` is a read-only product grid + detail view only. No cart, no checkout, no saga call, no payment token selector, no order history. **On the NEVER CUT list** — "without it the demo is Swagger." |
-| ⬜ CP-020 | WebSocket API + live stock push | No websocket-protocol `apigatewayv2` resource, no connections table. **On the NEVER CUT list** — Task 4's first named requirement. |
-| ⬜ CP-021 | Cognito / RBAC | No `aws_cognito_*` resource; confirmed in `IMPLEMENTATION_RECORD.md` §5 — every endpoint is open, no JWT validation anywhere. **On the NEVER CUT list** — "Task 3 is 40% of the implementation mark and is currently unbuilt." |
-| ⬜ CP-022 | Frontend — Admin panel | No admin component/route in `frontend/src/`. |
+| ⬜ CP-018 | CI — GitHub Actions | No `.github/workflows/`. Must run backend and frontend tests, linting, dependency/security checks, Docker builds, and `terraform fmt`/`validate`/plan. |
+| ⬜ CP-020 | WebSocket API + real-time push | No websocket-protocol `apigatewayv2` resource or connections table. Push stock, order-status and delivery-status events. **On the NEVER CUT list** — Task 4 requirement. |
 | ⬜ CP-023 | Authenticated order status push | Depends on CP-020 and CP-021, neither started. On the cut list if time is short. |
 | ⬜ CP-024 | Cash on delivery | No `payment_method`/`PENDING_ON_DELIVERY` anywhere in `order-service` (grep-confirmed). Correctly gated behind CP-019, which hasn't started. |
-| ⬜ CP-025 | Notification service | `backend/services/notification-service/` contains only `.gitkeep`. |
+| ⬜ CP-025 | Notification service | `backend/services/notification-service/` contains only `.gitkeep`. Build an idempotent EventBridge/SQS/DLQ consumer for order and delivery events, with an in-app notification feed and optional email. |
 | ⬜ CP-026 | Terraform — Observability | No alarms, no dashboard, no custom saga metrics in Terraform. X-Ray tracing config exists on the *unapplied* HTTP Lambdas only. **On the NEVER CUT list** (ADR-035 already promises the COMPENSATION_FAILED alarm). |
-| ⬜ CP-027 | Terraform — Backup and Recovery | No `aws_backup_vault`/plan, no S3 versioning (no S3 bucket exists yet at all — see CP-029). |
+| ⬜ CP-027 | Backup and Recovery | S3 versioning and DynamoDB PITR exist, but there is no restore drill, documented backup plan, RTO/RPO, or recovery evidence. |
 | ⬜ CP-028 | CD | No CI exists (CP-018), so no CD pipeline. |
 | ⬜ CP-030 | Terraform — Route 53 + DR failover | No `aws_route53_*` resource. **On the NEVER CUT list** — "without it the DR story is incomplete." |
 | ⬜ CP-031 | Multi-region DR demonstration | No second region, no Global Tables config. Depends on CP-030. |
-| ⬜ CP-032 | Terraform — ECS Fargate proof | No `aws_ecs_*` resource. First on the cut-if-short list. |
-| ⬜ CP-033 | User Profile service | `backend/services/user-profile-service/` contains only `.gitkeep`. Fourth on the cut-if-short list. |
+| ⬜ CP-032 | Container orchestration proof | No `aws_ecs_*`, EKS, or Kubernetes manifests. Produce the assignment-required Docker plus ECS Fargate/EKS/Kubernetes proof, with deployment configuration and evidence. |
+| ⬜ CP-033 | User Profile service | `backend/services/user-profile-service/` contains only `.gitkeep`. Build addresses, loyalty and GDPR-consent data, protected by customer ownership and admin access. |
 | ⬜ CP-034 | Staging + production environments | Only `dev.tfvars` exists (git-ignored); no `staging.tfvars`/`production.tfvars`. |
-| ⬜ CP-035 | Security testing | `docs/security/` contains only `.gitkeep`. No IDOR test, no auth-bypass test — none of it is possible yet since CP-021 (Cognito) doesn't exist. **On the NEVER CUT list.** |
-| ⬜ CP-036 | Performance/scalability testing on deployed infra | Only the local k6 oversell test exists; never run against deployed infra. Second on the cut-if-short list. |
+| ⬜ CP-035 | Security testing | `docs/security/` contains only `.gitkeep`. Add JWT/auth-bypass, IDOR/customer-ownership, admin-role, input-validation, dependency and API security tests. **On the NEVER CUT list.** |
+| ⬜ CP-036 | Performance/scalability testing on deployed infra | Only the local k6 oversell test exists. Measure deployed latency, throughput, error rate, concurrent users and bottlenecks, then capture graphs and analysis. |
 | ⬜ CP-037 | Resilience/fault tolerance evidence | PITR is enabled (a prerequisite) but no DLQ demo, no circuit-breaker trip evidence (blocked on CP-011's circuit breaker), no restore drill, no RTO/RPO writeup. |
-| ⬜ CP-038 | End-to-end API testing | `evidence/screenshots/` has exactly 2 images, both under `product-service/`. |
+| ⬜ CP-038 | End-to-end application testing | Cover customer registration → browse → checkout → order/delivery updates, admin catalogue/stock/order workflows, event delivery, and authenticated API tests. |
 | ⬜ CP-039 | Architecture diagrams | `infrastructure/diagrams/` contains only `.gitkeep`. |
 | ⬜ CP-040 | Evidence consolidation | Same 2 screenshots. **On the NEVER CUT list** — roadmap's own "HIGHEST-RISK ITEM" callout still accurate. |
 | ⬜ CP-041 | Final report | `report/` contains only `.gitkeep`. **On the NEVER CUT list.** |
@@ -74,14 +73,26 @@ Legend: ✅ Done &nbsp;·&nbsp; 🟡 In progress &nbsp;·&nbsp; ⬜ Not started
 | ⬜ CP-043 | Presentation slides | No slide file anywhere in the repo. |
 | ⬜ CP-044 | Viva preparation | N/A until the above is further along. |
 | ⬜ CP-045 | Submission audit | N/A until the above is further along. |
+| ⬜ CP-046 | Deployment correctness and live smoke test | Apply and verify the Lambda IAM transactional-write permissions; prove Product → Inventory → Order → Payment confirmation and forced decline through the deployed API. |
+| ⬜ CP-047 | Repeatable test environment | Make DynamoDB Local tests isolated and repeatable even when stale test tables exist; eliminate the current `OrdersTest` collision. |
+| ⬜ CP-048 | Delivery tracking | Add delivery states, tracking updates and events within the Order domain, with customer and admin visibility. |
+| ⬜ CP-049 | Product-price integrity | Admin product price changes remain catalogue-owned; enforce the existing checkout price-change comparison. A promotions/discount engine is deliberately out of scope. |
+| ⬜ CP-050 | Global currency correctness | Store an ISO-4217 currency with product and order money values; remove the implicit USD/two-decimal global assumption. |
+| ⬜ CP-051 | Frontend quality and automated tests | Add component/UI tests, accessibility checks, responsive layouts, protected routes and consistent empty/error states. |
+| ⬜ CP-052 | Complete API documentation | Export Product and Order OpenAPI definitions; document auth, roles, pagination, errors and WebSocket message contracts. |
+| ⬜ CP-053 | Cost governance / free-tier controls | Configure budget/credit alerts, record expected cost, document teardown, and exclude recurring-cost services unless required by assessment. |
+| ⬜ CP-054 | GDPR and PCI implementation evidence | Demonstrate consent and profile controls, data minimisation/retention decisions, tokenised payment handling, and security evidence. |
+| ⬜ CP-055 | CI/CD release quality gate | Run test, lint, dependency scan, Docker build, Terraform validation, deploy, smoke test and rollback/approval steps in CI/CD. |
+| ⬜ CP-056 | Full end-to-end user journeys | Record and evidence complete customer and administrator journeys from sign-in through operational outcomes. |
 
 ---
 
 ## Deliberately rejected (name these in the report)
 
 OpenSearch full-text search, ElastiCache/DAX, AWS Config, Shield Advanced, Transit
-Gateway/PrivateLink, customer order cancellation, recommendation engine, multi-currency. None of
-these have any code or Terraform present — correctly absent, nothing to reconcile.
+Gateway/PrivateLink, and recommendation engine. None have code or Terraform present — correctly
+absent for a free-tier-aware student implementation. Multi-currency is no longer a rejected item;
+it is captured by CP-050 as a global-retail correctness requirement.
 
 ---
 
@@ -94,11 +105,13 @@ these have any code or Terraform present — correctly absent, nothing to reconc
    precede it numerically — `orders` and `payments` tables are live in AWS today, without a VPC
    (CP-012) or CMKs (CP-013) yet in front of them. Not wrong, just worth knowing the deployment
    order didn't follow the roadmap's numbering.
-3. **CP-015 made an architectural substitution that needs a decision**: the in-progress work
-   builds an HTTP API (apigatewayv2), but this checkpoint explicitly asks for a REST API — the
-   two are not interchangeable (request validation, usage plans, and API keys are REST-API-only
-   features this checkpoint names). Either migrate it or write an ADR justifying HTTP API instead
-   before claiming this checkpoint complete.
+3. **CP-015's HTTP-API-vs-REST-API substitution is now resolved** — ADR-041 records the decision
+   and its reasoning (`docs/architecture/ARCHITECTURE_DECISIONS.md`). A later migration to REST
+   API was scoped and rejected: it would mean rewriting `api_gateway.tf`'s entire route model
+   (REST API has no equivalent to HTTP API's `route_key` shorthand — every path segment becomes
+   its own resource), updating every service's claims-reading code for the different event shape,
+   re-deriving the IAM route ARNs the order saga signs against, and adding a custom domain just to
+   recover the clean URL `$default` already gives for free. No net benefit was identified.
 4. **CP-017 (correlation IDs) is still unstarted** despite the roadmap's own warning to do it
    before more services exist — CP-025 (Notification) will be the fifth consumer to retrofit it
    across if it's deferred further.
@@ -114,20 +127,18 @@ these have any code or Terraform present — correctly absent, nothing to reconc
    subsequent plan until fixed (Problem 12). Worth keeping in mind for CP-034/CP-040: a clean
    `apply` on first try is not sufficient evidence a checkpoint is genuinely complete — a
    follow-up `plan` with zero changes is.
-
-## Uncommitted work in progress right now (branch `feature/order-saga`)
-
-- Modified: `lambda_inventory_consumer.tf`, `lambda_relay.tf`, `order_outbox.tf`, `outputs.tf`,
-  `variables.tf`
-- New, untracked: `api_gateway.tf`, `lambda_http_services.tf`, `docs/api/inventory-service.openapi.json`,
-  `docs/api/payment-service.openapi.json`, `scripts/create_order_outbox_table.py`,
-  `scripts/deploy-images.ps1`
-
-None of this has been `terraform apply`'d yet — `terraform state list` does not contain the order
-Lambda, the four new HTTP Lambdas, the API Gateway, or the `order_outbox` table.
-
-
----
+6. **CP-021 has been downgraded from ✅ Done back to 🟡 In progress.** The prior "Done,
+   live-verified" status (and the accompanying evidence screenshots described in
+   `IMPLEMENTATION_RECORD.md`'s 2026-08-17 update) predate two real bugs found by actually
+   exercising the deployed admin panel: the frontend was authenticating with the wrong Cognito
+   token type (access token, which carries no group membership, instead of the ID token), and
+   the admin product listing route was never reachable through any authorizer-attached gateway
+   route. Both are the same lesson CP-034/CP-040 already draws from Problem 10–12 above, applied
+   to an application-layer feature instead of infrastructure: passing smoke checks and "looks
+   configured" are not the same as verified working, and the earlier CP-021 evidence should be
+   treated as superseded rather than trusted, until it is recaptured against the fixed, deployed
+   code. See `IMPLEMENTATION_RECORD.md` §5 for the full amendment, including why the existing test
+   suite could not have caught this (`AUTH_TEST_MODE` bypasses the exact code path that broke).
 
 ## Update — network and edge complete
 

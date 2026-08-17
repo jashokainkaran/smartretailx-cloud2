@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from mangum import Mangum
 from app.models import (
     ProductCreate,
@@ -8,6 +8,7 @@ from app.models import (
     ProductBatchRequest,
 )
 from app import repository
+from app.auth import require_admin
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
 import logging
@@ -38,7 +39,7 @@ def health():
 
 
 @app.post("/api/v1/products", response_model=Product, status_code=201)
-def create_product(product: ProductCreate):
+def create_product(product: ProductCreate, _claims: dict = Depends(require_admin)):
     """Create a new product."""
     return repository.create_product(product)
 
@@ -72,6 +73,19 @@ def batch_get_products(request: ProductBatchRequest):
     return repository.batch_get_products(request.product_ids)
 
 
+@app.get("/api/v1/products/admin", response_model=ProductPage)
+def list_products_for_admin(
+    limit: int = Query(default=20, le=100, ge=1),
+    cursor: str | None = None,
+    _claims: dict = Depends(require_admin),
+):
+    """List active and inactive products for the administrator workspace."""
+    items, next_cursor = repository.list_products(
+        limit=limit, cursor=cursor, include_inactive=True
+    )
+    return {"items": items, "next_cursor": next_cursor}
+
+
 @app.get("/api/v1/products/{product_id}", response_model=Product)
 def get_product(product_id: str):
     """Fetch a single product by id."""
@@ -82,7 +96,7 @@ def get_product(product_id: str):
 
 
 @app.put("/api/v1/products/{product_id}", response_model=Product)
-def update_product(product_id: str, product: ProductUpdate):
+def update_product(product_id: str, product: ProductUpdate, _claims: dict = Depends(require_admin)):
     """
     Partially update a product. Only the fields supplied in the body are
     changed; omitted fields are left untouched.
@@ -94,7 +108,7 @@ def update_product(product_id: str, product: ProductUpdate):
 
 
 @app.patch("/api/v1/products/{product_id}/deactivate", response_model=Product)
-def deactivate_product(product_id: str):
+def deactivate_product(product_id: str, _claims: dict = Depends(require_admin)):
     """Deactivate a product so it no longer appears in the default listing."""
     updated = repository.set_product_active(product_id, False)
     if updated is None:
@@ -103,7 +117,7 @@ def deactivate_product(product_id: str):
 
 
 @app.patch("/api/v1/products/{product_id}/activate", response_model=Product)
-def activate_product(product_id: str):
+def activate_product(product_id: str, _claims: dict = Depends(require_admin)):
     """Reactivate a previously deactivated product."""
     updated = repository.set_product_active(product_id, True)
     if updated is None:
@@ -115,23 +129,26 @@ def activate_product(product_id: str):
 def list_products(
     limit: int = Query(default=20, le=100, ge=1),
     cursor: str | None = None,
-    include_inactive: bool = False,
 ):
     """
-    Fetch products with cursor-based pagination.
+    Fetch active products with cursor-based pagination. Public browsing only —
+    deactivated products are never returned here. The admin catalogue view,
+    which needs both, is GET /api/v1/products/admin instead: a public route
+    cannot also carry an admin-only query parameter, because API Gateway's
+    JWT authorizer is attached per ROUTE, not per query string, so an
+    in-app-only check on this route can never actually see real claims
+    (nothing here attaches the authorizer to make API Gateway populate them).
 
     Parameters:
     - limit: Number of items to return (1-100, default: 20)
     - cursor: Pagination cursor for the next page
-    - include_inactive: Include deactivated products (default: false).
-      Customers see only active products; the admin UI passes true.
 
     Returns:
     - items: List of Product objects
     - next_cursor: Cursor for the next page (null if no more pages)
     """
     items, next_cursor = repository.list_products(
-        limit=limit, cursor=cursor, include_inactive=include_inactive
+        limit=limit, cursor=cursor, include_inactive=False
     )
     return {"items": items, "next_cursor": next_cursor}
 

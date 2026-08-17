@@ -21,3 +21,6 @@ EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME")
 
 # The outbox table for reliable event publication (ADR-020).
 OUTBOX_TABLE = os.environ.get("OUTBOX_TABLE", "ProductOutbox")
+
+# Used only by isolated pytest runs, which do not have an API Gateway event.
+AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"

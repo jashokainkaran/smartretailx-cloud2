@@ -98,3 +98,17 @@ output "ecr_order_service_url" {
 output "http_service_function_names" {
   value = { for k, v in aws_lambda_function.http_service : k => v.function_name }
 }
+
+# These are public identifiers, safe to place in the React build. They are
+# outputs so the frontend setup never needs to copy a value by hand.
+output "cognito_user_pool_id" {
+  value = aws_cognito_user_pool.main.id
+}
+
+output "cognito_web_client_id" {
+  value = aws_cognito_user_pool_client.web.id
+}
+
+output "cognito_domain" {
+  value = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${var.aws_region}.amazoncognito.com"
+}

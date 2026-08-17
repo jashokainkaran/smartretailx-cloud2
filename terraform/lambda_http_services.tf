@@ -139,6 +139,17 @@ resource "aws_iam_role_policy" "product_api" {
         # batch price lookup the Order saga calls. No DeleteItem: products
         # are soft-deleted via an active flag (ADR-037), so the API has no
         # code path that deletes and the role grants no permission to.
+        #
+        # TransactWriteItems is listed explicitly even though DynamoDB
+        # authorizes create_product()'s transaction via the constituent
+        # PutItem grants below, not this action name — confirmed against the
+        # live role with `aws iam simulate-principal-policy` and a real
+        # invocation. It's added anyway, scoped to exactly the two tables
+        # the transaction touches, purely so the policy is self-documenting
+        # about what this role does without requiring that constituent-action
+        # nuance to be known. Confirmed additive: adding an allowed action
+        # cannot change the authorization outcome of any action already
+        # allowed.
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
@@ -146,14 +157,18 @@ resource "aws_iam_role_policy" "product_api" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Scan",
+          "dynamodb:TransactWriteItems",
         ]
         Resource = aws_dynamodb_table.products.arn
       },
       {
         # create_product writes the product and its outbox record in one
         # TransactWriteItems, which needs PutItem on BOTH tables (ADR-020).
-        Effect   = "Allow"
-        Action   = "dynamodb:PutItem"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems",
+        ]
         Resource = aws_dynamodb_table.product_outbox.arn
       },
     ]
@@ -183,11 +198,15 @@ resource "aws_iam_role_policy" "inventory_api" {
       {
         # UpdateItem covers both the single-item conditional writes and the
         # all-or-nothing batch transaction, which is a set of Updates.
+        # TransactWriteItems listed for the same self-documenting reason as
+        # product-api above — not required (DynamoDB authorizes via the
+        # UpdateItem grant), added anyway as explicit, harmless intent.
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          "dynamodb:TransactWriteItems",
         ]
         Resource = aws_dynamodb_table.inventory.arn
       },
@@ -249,12 +268,31 @@ resource "aws_iam_role_policy" "order_api" {
       local.logs_statement,
       local.xray_statement,
       {
+        # Only the Order saga may invoke the internal operations below. Each
+        # call is SigV4-signed with this role's temporary Lambda credentials.
+        Effect = "Allow"
+        Action = "execute-api:Invoke"
+        Resource = [
+          "${aws_apigatewayv2_api.main.execution_arn}/*/POST/api/v1/products/batch",
+          "${aws_apigatewayv2_api.main.execution_arn}/*/POST/api/v1/inventory/reserve",
+          "${aws_apigatewayv2_api.main.execution_arn}/*/POST/api/v1/inventory/release",
+          "${aws_apigatewayv2_api.main.execution_arn}/*/POST/api/v1/inventory/confirm",
+          "${aws_apigatewayv2_api.main.execution_arn}/*/POST/api/v1/payments",
+        ]
+      },
+      {
+        # TransactWriteItems listed for the same self-documenting reason as
+        # product-api above — set_status_and_publish()'s transaction (orders
+        # Update + order-outbox Put) is authorized via the UpdateItem/PutItem
+        # grants on each table, not this action name; added anyway as
+        # explicit, harmless intent.
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
+          "dynamodb:TransactWriteItems",
         ]
         Resource = aws_dynamodb_table.orders.arn
       },
@@ -266,8 +304,11 @@ resource "aws_iam_role_policy" "order_api" {
         Resource = "${aws_dynamodb_table.orders.arn}/index/*"
       },
       {
-        Effect   = "Allow"
-        Action   = "dynamodb:PutItem"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems",
+        ]
         Resource = aws_dynamodb_table.order_outbox.arn
       },
     ]
@@ -366,9 +407,28 @@ locals {
         # here is what produces PAYMENT_UNKNOWN or STOCK_UNKNOWN (ADR-034),
         # so the value is a real correctness parameter, not a default.
         DOWNSTREAM_TIMEOUT_SECONDS = "8"
+        SIGN_DOWNSTREAM_REQUESTS   = "true"
       }
     }
   }
+
+  http_service_repositories = {
+    product   = aws_ecr_repository.product_service.name
+    inventory = aws_ecr_repository.inventory_service.name
+    payment   = aws_ecr_repository.payment_service.name
+    order     = aws_ecr_repository.order_service.name
+  }
+}
+
+# A tag such as :latest is mutable, so Terraform cannot tell that a newly
+# pushed image contains new application code. Resolving the tag to its digest
+# makes the Lambda code version explicit and lets a plan safely deploy the
+# image that was actually built and pushed before the apply.
+data "aws_ecr_image" "http_service" {
+  for_each = local.http_service_repositories
+
+  repository_name = each.value
+  image_tag       = "latest"
 }
 
 resource "aws_lambda_function" "http_service" {
@@ -377,7 +437,7 @@ resource "aws_lambda_function" "http_service" {
   function_name = "${local.prefix}-${each.key}-api"
   role          = each.value.role_arn
   package_type  = "Image"
-  image_uri     = "${each.value.ecr_url}:latest"
+  image_uri     = "${each.value.ecr_url}@${data.aws_ecr_image.http_service[each.key].image_digest}"
 
   timeout     = 30
   memory_size = each.value.memory

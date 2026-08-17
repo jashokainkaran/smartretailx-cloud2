@@ -18,3 +18,6 @@ PAYMENTS_TABLE = os.environ.get("PAYMENTS_TABLE", "Payments")
 # Which payment provider implementation to use. "mock" for local dev and
 # tests; a real integration would add its own value here (e.g. "stripe").
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "mock")
+
+# Used only by isolated pytest runs, which do not have an API Gateway event.
+AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"

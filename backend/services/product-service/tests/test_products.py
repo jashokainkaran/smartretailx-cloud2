@@ -5,6 +5,7 @@ import os
 os.environ["PRODUCTS_TABLE"] = "ProductsTest"
 os.environ["OUTBOX_TABLE"] = "ProductOutboxTest"
 os.environ["DYNAMODB_ENDPOINT"] = "http://localhost:8000"
+os.environ["AUTH_TEST_MODE"] = "true"
 
 import boto3
 import pytest
@@ -154,9 +155,26 @@ def test_deactivate_then_list_include_inactive_shows_it():
 
     client.patch(f"/api/v1/products/{created['id']}/deactivate")
 
-    listing = client.get("/api/v1/products?include_inactive=true").json()
+    # The admin-only listing, not the public one: a deactivated product is
+    # never returned by GET /api/v1/products (see that route's docstring).
+    listing = client.get("/api/v1/products/admin").json()
     ids = [item["id"] for item in listing["items"]]
     assert created["id"] in ids
+
+
+def test_public_listing_never_returns_deactivated_products():
+    created = client.post("/api/v1/products", json={
+        "name": "Withdrawn",
+        "description": "x",
+        "price": 1.0,
+        "category": "Testing",
+    }).json()
+
+    client.patch(f"/api/v1/products/{created['id']}/deactivate")
+
+    listing = client.get("/api/v1/products").json()
+    ids = [item["id"] for item in listing["items"]]
+    assert created["id"] not in ids
 
 
 def test_activate_restores_default_listing():

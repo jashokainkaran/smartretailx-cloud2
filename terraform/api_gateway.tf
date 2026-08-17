@@ -78,6 +78,84 @@ resource "aws_apigatewayv2_route" "sub_paths" {
   target    = "integrations/${aws_apigatewayv2_integration.http_service[each.key].id}"
 }
 
+# Cognito validates the JWT signature, issuer, intended client and expiry at
+# the gateway before the Lambda is invoked. Roles are deliberately checked by
+# the service from the trusted claims that API Gateway forwards: a Cognito
+# group is an application role, not an OAuth scope.
+resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
+  api_id          = aws_apigatewayv2_api.main.id
+  authorizer_type = "JWT"
+  name            = "${local.prefix}-cognito-jwt"
+
+  identity_sources = ["$request.header.Authorization"]
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.web.id]
+    issuer   = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.main.id}"
+  }
+}
+
+# These exact routes take precedence over the existing broad ANY routes.
+# Keeping the broad routes in place avoids a destructive route migration while
+# the protected surface is introduced one operation at a time.
+locals {
+  jwt_routes = {
+    product_create     = { service = "product", route_key = "POST /api/v1/products" }
+    product_admin_list = { service = "product", route_key = "GET /api/v1/products/admin" }
+    product_update     = { service = "product", route_key = "PUT /api/v1/products/{product_id}" }
+    product_activate   = { service = "product", route_key = "PATCH /api/v1/products/{product_id}/activate" }
+    product_deactivate = { service = "product", route_key = "PATCH /api/v1/products/{product_id}/deactivate" }
+
+    inventory_add          = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/add" }
+    inventory_reserve_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/reserve" }
+    inventory_release_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/release" }
+    inventory_confirm_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/confirm" }
+
+    order_create = { service = "order", route_key = "POST /api/v1/orders" }
+    order_list   = { service = "order", route_key = "GET /api/v1/orders" }
+    order_get    = { service = "order", route_key = "GET /api/v1/orders/{order_id}" }
+    order_stuck  = { service = "order", route_key = "GET /api/v1/orders/stuck" }
+
+    payment_get    = { service = "payment", route_key = "GET /api/v1/payments/{payment_id}" }
+    payment_refund = { service = "payment", route_key = "POST /api/v1/payments/{payment_id}/refund" }
+  }
+
+  # The order saga is an AWS workload, not a browser user. These requests are
+  # signed with the Order Lambda role and cannot be made with a Cognito token.
+  iam_routes = {
+    product_batch     = { service = "product", route_key = "POST /api/v1/products/batch" }
+    inventory_reserve = { service = "inventory", route_key = "POST /api/v1/inventory/reserve" }
+    inventory_release = { service = "inventory", route_key = "POST /api/v1/inventory/release" }
+    inventory_confirm = { service = "inventory", route_key = "POST /api/v1/inventory/confirm" }
+    payment_charge    = { service = "payment", route_key = "POST /api/v1/payments" }
+  }
+}
+
+resource "aws_apigatewayv2_route" "jwt" {
+  for_each = local.jwt_routes
+
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = each.value.route_key
+  target             = "integrations/${aws_apigatewayv2_integration.http_service[each.value.service].id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_jwt.id
+
+  # New service code checks the forwarded claims. Update all Lambda images
+  # before exposing the corresponding protected gateway routes.
+  depends_on = [aws_lambda_function.http_service]
+}
+
+resource "aws_apigatewayv2_route" "iam" {
+  for_each = local.iam_routes
+
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = each.value.route_key
+  target             = "integrations/${aws_apigatewayv2_integration.http_service[each.value.service].id}"
+  authorization_type = "AWS_IAM"
+
+  depends_on = [aws_lambda_function.http_service]
+}
+
 # API Gateway must be granted permission to invoke each function. Scoped to
 # this API's execution ARN, so no other gateway in the account can call them.
 resource "aws_lambda_permission" "api_gateway" {

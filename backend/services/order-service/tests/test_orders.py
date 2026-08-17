@@ -4,6 +4,7 @@ import os
 os.environ["ORDERS_TABLE"] = "OrdersTest"
 os.environ["ORDER_OUTBOX_TABLE"] = "OrderOutboxTest"
 os.environ["DYNAMODB_ENDPOINT"] = "http://localhost:8000"
+os.environ["AUTH_TEST_MODE"] = "true"
 
 import json
 from decimal import Decimal
@@ -138,16 +139,34 @@ def calls(monkeypatch):
     return recorded
 
 
-def basket(items=None, customer_id="cust-1", token="tok_test_ok"):
+def shipping_address(**overrides):
+    address = {
+        "recipient_name": "Test Customer",
+        "street": "1 Test Street",
+        "city": "Testville",
+        "postal_code": "T3 5TT",
+        "country": "United Kingdom",
+    }
+    address.update(overrides)
+    return address
+
+
+def basket(items=None, customer_id="cust-1", token="tok_test_ok", payment_method="card"):
     # `items is None` rather than `items or ...` — an empty list is a
     # deliberate test input, not a missing argument.
     if items is None:
         items = [{"product_id": "p1", "quantity": 2}]
-    return {
+    payload = {
         "customer_id": customer_id,
         "items": items,
-        "payment_token": token,
+        "shipping_address": shipping_address(),
+        "contact_email": "customer@example.com",
+        "contact_phone": "+44 7700 900000",
+        "payment_method": payment_method,
     }
+    if payment_method == "card":
+        payload["payment_token"] = token
+    return payload
 
 
 def outbox_records():
@@ -594,6 +613,116 @@ def test_list_orders_paginates(calls):
     ).json()
     assert len(page2["items"]) == 1
     assert page2["next_cursor"] is None
+
+
+# ---------------------------------------------------------------------------
+# Cash on delivery
+# ---------------------------------------------------------------------------
+
+def test_cash_on_delivery_confirms_without_charging(calls):
+    response = client.post("/api/v1/orders", json=basket(payment_method="cash_on_delivery"))
+    assert response.status_code == 201
+
+    body = response.json()
+    assert body["status"] == states.PENDING_ON_DELIVERY
+    assert body["payment_id"] is None
+    assert body["payment_method"] == "cash_on_delivery"
+
+    # Stock is still reserved and confirmed exactly like a card order —
+    # only the payment step is skipped.
+    assert (calls.reserved, calls.confirmed) == (1, 1)
+    assert calls.charged == 0
+
+
+def test_cash_on_delivery_publishes_order_confirmed_with_its_own_status(calls):
+    order_id = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()["order_id"]
+
+    records = outbox_records()
+    assert len(records) == 1
+    assert records[0]["event_type"] == "OrderConfirmed"
+
+    envelope = json.loads(records[0]["payload"])
+    assert envelope["data"]["order_id"] == order_id
+    assert envelope["data"]["status"] == states.PENDING_ON_DELIVERY
+
+
+def test_cash_on_delivery_leaves_the_recovery_index(calls):
+    """PENDING_ON_DELIVERY is healthy-terminal, same as CONFIRMED — an order
+    correctly awaiting delivery must not look like a stuck saga to an admin."""
+    order_id = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()["order_id"]
+
+    assert "saga_status" not in raw_order(order_id)
+    assert client.get("/api/v1/orders/stuck").json() == []
+
+
+def test_cash_on_delivery_insufficient_stock_still_rejects(calls, monkeypatch):
+    """The reserve step is shared by both payment methods — COD does not
+    bypass oversell prevention."""
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Insufficient stock for: p1")
+    ))
+
+    body = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()
+    assert body["status"] == states.REJECTED
+    assert calls.confirmed == 0
+
+
+def test_cash_on_delivery_confirm_failure_fails_with_nothing_to_compensate(calls, monkeypatch):
+    """Nothing was ever charged, so unlike the card path there is no refund
+    to attempt — the order goes straight to FAILED."""
+    monkeypatch.setattr(clients, "confirm_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Cannot confirm more than is reserved for: p1")
+    ))
+
+    body = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()
+    assert body["status"] == states.FAILED
+    assert body["payment_id"] is None
+    assert calls.refunded == 0
+    assert calls.released == 0
+
+
+def test_cash_on_delivery_confirm_timeout_records_stock_unknown(calls, monkeypatch):
+    monkeypatch.setattr(clients, "confirm_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamUnknown("inventory timeout")
+    ))
+
+    body = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()
+    assert body["status"] == states.STOCK_UNKNOWN
+    assert body["payment_id"] is None
+
+
+def test_card_payment_without_token_is_rejected(calls):
+    payload = basket()
+    del payload["payment_token"]
+
+    response = client.post("/api/v1/orders", json=payload)
+    assert response.status_code == 422
+
+
+def test_cash_on_delivery_does_not_require_a_payment_token(calls):
+    """basket(payment_method="cash_on_delivery") already omits payment_token
+    entirely (see the helper above) — this asserts that is actually valid,
+    not just untested."""
+    response = client.post("/api/v1/orders", json=basket(payment_method="cash_on_delivery"))
+    assert response.status_code == 201
+
+
+def test_invalid_contact_email_is_rejected(calls):
+    payload = basket()
+    payload["contact_email"] = "not-an-email"
+
+    response = client.post("/api/v1/orders", json=payload)
+    assert response.status_code == 422
 
 
 def test_stuck_orders_lists_every_needs_attention_state(calls, monkeypatch):

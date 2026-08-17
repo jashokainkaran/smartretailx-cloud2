@@ -14,3 +14,6 @@ AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
 
 # The name of our table.
 INVENTORY_TABLE = os.environ.get("INVENTORY_TABLE", "Inventory")
+
+# Used only by isolated pytest runs, which do not have an API Gateway event.
+AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"

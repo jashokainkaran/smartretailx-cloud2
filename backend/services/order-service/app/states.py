@@ -30,6 +30,15 @@ CONFIRMED = "CONFIRMED"    # paid and stock confirmed; the happy path
 REJECTED = "REJECTED"      # insufficient stock; nothing was taken, nothing to undo
 FAILED = "FAILED"          # something failed AND compensation succeeded
 
+# Cash on delivery: stock is confirmed (committed to this order) exactly
+# like CONFIRMED, but no payment has been taken — that happens physically at
+# delivery, outside this system. Deliberately its own terminal state rather
+# than reusing PENDING: PENDING is IN_FLIGHT, a saga that has not started
+# yet and is expected to move within milliseconds. An order legitimately
+# sitting here for days is not a saga that stalled — collapsing the two
+# would make a working COD order indistinguishable from a crashed one.
+PENDING_ON_DELIVERY = "PENDING_ON_DELIVERY"
+
 # --- Terminal, needs a human ----------------------------------------------
 # PAYMENT_UNKNOWN is an amendment to ADR-033, which listed only four
 # terminal states. ADR-034 says an UNKNOWN payment cannot be treated as
@@ -67,6 +76,7 @@ TERMINAL = {
     CONFIRMED,
     REJECTED,
     FAILED,
+    PENDING_ON_DELIVERY,
     PAYMENT_UNKNOWN,
     STOCK_UNKNOWN,
     COMPENSATION_FAILED,

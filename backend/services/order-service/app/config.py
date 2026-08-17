@@ -40,3 +40,10 @@ PAYMENT_SERVICE_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://localhost:80
 # Too short and we manufacture UNKNOWNs that would have resolved; too long
 # and the saga holds stock while a dead service never answers.
 DOWNSTREAM_TIMEOUT_SECONDS = float(os.environ.get("DOWNSTREAM_TIMEOUT_SECONDS", "10"))
+
+# In AWS the Order Lambda signs its service-to-service calls with its own
+# temporary IAM role credentials. Local tests use ordinary localhost HTTP.
+SIGN_DOWNSTREAM_REQUESTS = os.environ.get("SIGN_DOWNSTREAM_REQUESTS", "false").lower() == "true"
+
+# Used only by isolated pytest runs, which do not have an API Gateway event.
+AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"

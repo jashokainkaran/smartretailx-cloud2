@@ -1,6 +1,15 @@
+import re
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
-from pydantic import BaseModel, Field, field_serializer
+from typing import Literal, Optional
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
+
+# Deliberately not pydantic's EmailStr: that needs the email-validator
+# package, an extra dependency for a check that only needs to catch typos
+# at the API boundary. Real delivery is proven by SES actually sending, not
+# by a stricter regex here.
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+PaymentMethod = Literal["card", "cash_on_delivery"]
 
 
 def _two_places(value: Decimal) -> str:
@@ -34,8 +43,20 @@ class OrderItemRequest(BaseModel):
     quantity: int = Field(..., gt=0)
 
 
+class ShippingAddress(BaseModel):
+    """Where the order is delivered. Required on every order, card or COD —
+    even a card payment has to arrive somewhere."""
+    recipient_name: str = Field(..., min_length=1)
+    street: str = Field(..., min_length=1)
+    city: str = Field(..., min_length=1)
+    postal_code: str = Field(..., min_length=1)
+    country: str = Field(..., min_length=1)
+
+
 class OrderCreate(BaseModel):
-    customer_id: str
+    # The API accepts no customer identity from the browser. The route handler
+    # fills this from the verified Cognito subject before the saga starts.
+    customer_id: Optional[str] = None
 
     # min_length=1 rejects an empty basket at the API boundary with a 422,
     # before any order record is written and before the saga starts. An
@@ -51,11 +72,35 @@ class OrderCreate(BaseModel):
     # letting DynamoDB reject with an opaque ValidationException.
     items: list[OrderItemRequest] = Field(..., min_length=1, max_length=100)
 
+    shipping_address: ShippingAddress
+    contact_email: str
+    contact_phone: str = Field(..., min_length=7, max_length=20)
+
+    payment_method: PaymentMethod
+
     # PSP token — never a card number (ADR-007). Passed through to the
     # Payment service and never persisted on the order: note that no field
     # on Order below can hold it. The boundary is enforced by the shape of
     # the models, not by remembering not to write it.
-    payment_token: str
+    #
+    # Optional here, not required: cash on delivery takes no payment at
+    # checkout, so there is nothing to tokenise. The validator below is what
+    # actually enforces "required when paying by card" — Optional alone
+    # would let a card order through with no token at all.
+    payment_token: Optional[str] = None
+
+    @field_validator("contact_email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        if not _EMAIL_PATTERN.match(value):
+            raise ValueError("contact_email is not a valid email address")
+        return value
+
+    @model_validator(mode="after")
+    def _payment_token_required_for_card(self):
+        if self.payment_method == "card" and not self.payment_token:
+            raise ValueError("payment_token is required when payment_method is 'card'")
+        return self
 
 
 class OrderLineItem(BaseModel):
@@ -84,6 +129,11 @@ class Order(BaseModel):
     order_id: str
     customer_id: str
     items: list[OrderLineItem]
+
+    shipping_address: ShippingAddress
+    contact_email: str
+    contact_phone: str
+    payment_method: PaymentMethod
 
     # Computed server-side from the snapshotted line items, never sent by
     # the client, for the same reason unit_price isn't.

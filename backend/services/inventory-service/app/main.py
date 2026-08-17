@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from mangum import Mangum
 from app.models import InventoryItem
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
+from app.auth import require_admin
 from app.models import StockOperation
 
 
@@ -38,8 +39,16 @@ def get_stock(product_id: str):
 
 
 @app.post("/api/v1/inventory/{product_id}/reserve")
-def reserve_stock(product_id: str, quantity: int):
-    """Reserve stock for a product. Returns 409 if insufficient stock."""
+def reserve_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
+    """
+    Reserve stock for a product. Returns 409 if insufficient stock.
+
+    Not called by the Order saga, which reserves a whole basket at once via
+    the all-or-nothing /reserve batch endpoint below. This single-item form
+    exists for manual admin stock management (e.g. holding stock for an
+    offline sale), so it is admin-only rather than customer- or
+    saga-reachable.
+    """
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     try:
@@ -50,8 +59,8 @@ def reserve_stock(product_id: str, quantity: int):
 
 
 @app.post("/api/v1/inventory/{product_id}/release")
-def release_stock(product_id: str, quantity: int):
-    """Release previously reserved stock for a product."""
+def release_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
+    """Release previously reserved stock for a product. Admin-only (see reserve_stock)."""
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     try:
@@ -60,8 +69,8 @@ def release_stock(product_id: str, quantity: int):
         raise HTTPException(status_code=409, detail=str(e))
 
 @app.post("/api/v1/inventory/{product_id}/confirm")
-def confirm_stock(product_id: str, quantity: int):
-    """Confirm a sale — permanently remove reserved stock (payment succeeded)."""
+def confirm_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
+    """Confirm a sale — permanently remove reserved stock. Admin-only (see reserve_stock)."""
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     try:
@@ -70,7 +79,7 @@ def confirm_stock(product_id: str, quantity: int):
         raise HTTPException(status_code=409, detail=str(e))
 
 @app.post("/api/v1/inventory/{product_id}/add")
-def add_stock(product_id: str, quantity: int):
+def add_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
     """Add stock (restock or create initial record)."""
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")

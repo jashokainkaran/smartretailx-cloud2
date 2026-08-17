@@ -3,6 +3,7 @@
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+cognito-post-confirmation.zip
 
 # Variable files may contain sensitive values
 *.tfvars

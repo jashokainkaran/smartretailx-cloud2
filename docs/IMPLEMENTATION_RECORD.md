@@ -24,17 +24,38 @@ Catalogue, Inventory, Payment, Order, Notification, and User Profile.
 **Not started:** Notification, User Profile. No code exists for either beyond a `.gitkeep`
 placeholder directory under `backend/services/`.
 
-**Deployed to AWS (eu-west-1):**
-- The event backbone (EventBridge bus, SQS queue, DLQ) — Terraform-provisioned.
-- The outbox relay Lambda (`smartretailx-dev-outbox-relay`), triggered by a DynamoDB Stream.
-- The inventory consumer Lambda (`smartretailx-dev-inventory-consumer`), triggered by SQS.
-- The `products` and `inventory` DynamoDB tables, plus the `product-outbox` table.
-- Two ECR repositories with lifecycle policies (`product-service`, `outbox-relay`), plus a
-  third for `inventory-service`.
+**Deployed to AWS (`eu-west-1`, account `194680606132`, `dev` environment — the only
+environment ever applied), as of 2026-08-15, `terraform plan` clean:**
+- **All four HTTP services behind one API Gateway** (`smartretailx-dev-api`,
+  `d61p2h3x2e.execute-api.eu-west-1.amazonaws.com`) — Product, Inventory, Payment, and Order,
+  each its own Lambda container image, path-routed (`/api/v1/products`, `/api/v1/inventory`,
+  `/api/v1/payments`, `/api/v1/orders`). §4, `api_gateway.tf` / `lambda_http_services.tf`.
+- **The full network** (`vpc.tf`) — VPC `10.0.0.0/16`, 2 private + 2 public subnets across
+  `eu-west-1a`/`1b`, route tables, 2 security groups, 2 NACLs, a DynamoDB gateway endpoint, an
+  EventBridge interface endpoint, flow logs. No NAT gateway, by design. `product-api`,
+  `inventory-api`, `payment-api`, and the three background Lambdas below run inside it;
+  `order-api` deliberately does not (§4).
+- **WAF** (`smartretailx-dev-web-acl`) in front of CloudFront — common rule set,
+  known-bad-inputs rule set, per-IP rate limit 2000.
+- **Frontend hosting** — CloudFront (`d1vxg10hlsklfv.cloudfront.net`) + private S3
+  (`smartretailx-dev-frontend-194680606132`) via Origin Access Control, `/api/*` routed to the
+  same API Gateway. **The bucket is currently empty** — the React build has not been uploaded
+  (§8).
+- **The event backbone** (EventBridge bus, SQS queue, DLQ) — Terraform-provisioned.
+- **The outbox relay Lambda** (`smartretailx-dev-outbox-relay`), triggered by a DynamoDB
+  Stream, and a **second relay** for the order outbox (`smartretailx-dev-order-outbox-relay`).
+- **The inventory consumer Lambda** (`smartretailx-dev-inventory-consumer`), triggered by SQS.
+- **All five DynamoDB tables** — `products`, `inventory`, `payments`, `orders`, plus the two
+  outbox tables (`product-outbox`, `order-outbox`) — all with point-in-time recovery enabled.
+- Five ECR repositories with lifecycle policies, one per deployed image
+  (`product-service`, `inventory-service`, `payment-service`, `order-service`,
+  `outbox-relay`).
 
-**Not deployed to AWS:** the Product, Inventory, and Payment HTTP APIs themselves. They run
-locally under `uvicorn` and are not behind API Gateway. No API Gateway resource exists in
-Terraform at all.
+**Not deployed to AWS:** Notification and User Profile (no code exists for either — see
+below); observability (alarms, dashboard); CI/CD; staging or production environments (only
+`dev` has ever been applied); and the React production build itself (the hosting infrastructure
+exists and its bucket remains empty). Cognito authentication and route-level RBAC are deployed
+and verified; see the 2026-08-17 update below.
 
 ### End-to-end flow: product creation to stock availability
 
@@ -65,9 +86,25 @@ Terraform at all.
    an `OrderConfirmed` outbox record in one transaction. Every failure path compensates or
    escalates explicitly (§2.5).
 
-A complete checkout flow now exists end to end, locally. The deployed slice on AWS proves that
-a product creation event reliably reaches Inventory; the saga itself has been proven by its
-test suite and has not yet been exercised against deployed services behind API Gateway.
+A complete checkout flow exists end to end, locally, proven by the 26-test suite in §2.5, and is
+now proven against deployed AWS infrastructure too. All four services run behind API Gateway
+(§4), with the saga's downstream calls (`PRODUCT_SERVICE_URL`, `INVENTORY_SERVICE_URL`,
+`PAYMENT_SERVICE_URL`) reaching them there rather than `localhost`. Confirmed directly against
+the live `smartretailx-dev-orders` table (`aws dynamodb scan`, not just the API response) — all
+three terminal states exist from real requests against the deployed
+`d61p2h3x2e.execute-api.eu-west-1.amazonaws.com` URL:
+
+| Terminal state | Order id (truncated) | Total | Proves |
+|---|---|---|---|
+| `CONFIRMED` | `c1d1a6bf…` | 59.98 | Happy path: reserve, charge, confirm, all against deployed services. |
+| `FAILED` | `1201ed68…` | 59.98 | `tok_test_decline` → stock released, `payment_id` recorded — the compensation path. |
+| `REJECTED` | `2fb818e1…` | 29960.01 | Insufficient stock rejected before any charge attempted. |
+| `CONFIRMED` | `76e01bd4…` | 39.98 | Second independent confirmation, different order. |
+| `FAILED` | `31c9e182…` | 59.97 | Second independent decline/compensation. |
+
+Both `inventory-api` and `payment-api` sit inside the VPC (§4) and `order-api` reaches them over
+the public API Gateway URL exactly as designed — this is confirmation that the network placement
+described in §4 doesn't just apply cleanly, it actually serves live traffic correctly.
 
 ---
 
@@ -151,7 +188,23 @@ publisher side of the `ProductCreated` event.
   request, with cost proportional to how deep into the result set the client has paged, rather
   than the constant-cost key lookup `LastEvaluatedKey` provides.
 
-**Test coverage** (`tests/test_products.py`, 10 tests, run against a throwaway `ProductsTest` +
+**Batch endpoint** (added to support the Order saga's basket pricing, §2.5):
+
+| Method | Path | Request | Success | Failure |
+|---|---|---|---|---|
+| POST | `/api/v1/products/batch` | `{"product_ids": [...]}` (1–100 ids) | 200 `list[Product]` | 422 if the list is empty or exceeds 100 ids |
+
+`repository.batch_get_products()` de-duplicates the requested ids before calling
+`BatchGetItem` — DynamoDB raises `ValidationException` on duplicate keys in one request, and the
+same product can legitimately appear on two basket lines. A missing id is simply absent from the
+response rather than an error: the saga compares what it asked for against what came back and
+decides what "missing" means, the catalogue does not. Deactivated products **are** included
+(`active: false`), not filtered out (ADR-037) — otherwise the saga could not distinguish a
+withdrawn product from one that never existed.
+
+**Test coverage** (`tests/test_products.py`, **16 tests** — a `test_table` autouse fixture in
+the same file is not itself a test, and earlier revisions of this record undercounted by
+omitting the six batch tests below — run against a throwaway `ProductsTest` +
 `ProductOutboxTest` table pair created and torn down per test):
 
 | Test | Proves |
@@ -166,6 +219,12 @@ publisher side of the `ProductCreated` event.
 | `test_deactivate_then_list_include_inactive_shows_it` | The same deactivated product appears when `include_inactive=true`. |
 | `test_activate_restores_default_listing` | `PATCH .../activate` after deactivation restores the product to the default listing. |
 | `test_list_products_pagination` | Creating 3 products and listing with `limit=2` returns 2 items plus a `next_cursor`; following the cursor returns the remaining 1 item and no further cursor. |
+| `test_batch_get_returns_requested_products` | Batch-fetching two known ids returns both, prices as strings (ADR-039). |
+| `test_batch_get_omits_unknown_ids` | An unknown id among the requested ones is silently absent from the response, not an error. |
+| `test_batch_get_deduplicates_ids` | The same id requested three times returns exactly one item. |
+| `test_batch_get_includes_deactivated_products` | A deactivated product is still returned, with `active: false`. |
+| `test_batch_get_empty_list_is_rejected` | An empty `product_ids` list returns 422. |
+| `test_batch_get_over_100_ids_is_rejected` | 101 requested ids returns 422 — `BatchGetItem`'s own hard limit, enforced at the boundary. |
 
 **Not tested:** the `TransactWriteItems` call failing partway (no test simulates a transaction
 failure to confirm neither write lands); the outbox record's exact stored shape.
@@ -192,6 +251,26 @@ validated `InventoryItem`):
 | POST | `/api/v1/inventory/{product_id}/release?quantity=N` | — | 200, updated attributes | 400 if `quantity <= 0`; 409 if `reserved_quantity < quantity` |
 | POST | `/api/v1/inventory/{product_id}/confirm?quantity=N` | — | 200, updated attributes | 400 if `quantity <= 0`; 409 if `reserved_quantity < quantity` |
 | POST | `/api/v1/inventory/{product_id}/add?quantity=N` | — | 200, updated attributes | 400 if `quantity <= 0` |
+
+**Batch endpoints** (added to support the Order saga's multi-line reserve/release/confirm — a
+basket has several products, and a saga step must move all of them together, not one at a
+time):
+
+| Method | Path | Request | Success | Failure |
+|---|---|---|---|---|
+| POST | `/api/v1/inventory/reserve` | `list[StockOperation]` (`product_id`, `quantity`) | 200 `{"status": "reserved", "products": N}` | 400 empty list or >100 distinct products; 422 non-positive quantity; 409 any line's condition fails |
+| POST | `/api/v1/inventory/release` | same | 200 `{"status": "released", ...}` | same shape, on `reserved_quantity` |
+| POST | `/api/v1/inventory/confirm` | same | 200 `{"status": "confirmed", ...}` | same shape, on `reserved_quantity` |
+
+`repository._transact_stock()` (used by `reserve_many`/`release_many`/`confirm_many`) issues one
+`TransactWriteItems` call across every line, so a basket is moved **all-or-nothing** — the same
+guarantee ADR-017 gives a single item, extended to a whole basket. Lines against the same
+`product_id` are aggregated (`_aggregate()`) before the call, for the same reason as Product's
+batch-get: DynamoDB rejects two operations on the same key inside one transaction, and the
+aggregate quantity — not either line individually — is what must satisfy the condition (two
+lines that individually fit can still oversell in total). `TransactWriteItems`'s
+`CancellationReasons` are positional, which is what lets a 409's message name the specific
+product that failed rather than a generic "insufficient stock".
 
 **Data model** (`app/models.py`): `InventoryItem(BaseModel)`: `product_id: str`,
 `available_quantity: int`, `reserved_quantity: int = 0`.
@@ -227,8 +306,12 @@ overridden, per ADR-024): for each SQS record, parses `json.loads(record["body"]
 event), calls `repository.create_stock_record(product_id)`, and logs at INFO whether the record
 was newly `created` or was a `duplicate`. Returns `{"created": N, "duplicates": N}`.
 
-**Test coverage** (`tests/test_inventory.py`, 8 tests, against a throwaway `InventoryTest` table
-seeded with one record — `product_id: "p1"`, 100 available, 0 reserved — before each test):
+**Test coverage** (`tests/test_inventory.py`, **20 tests** — a `test_table` autouse fixture in
+the same file is not itself a test, and earlier revisions of this record undercounted by
+omitting the twelve batch tests below — against a throwaway `InventoryTest` table seeded with
+two records before each test: `p1` (100 available, 0 reserved) and `p2` (5 available, 0
+reserved) — the second, deliberately scarce, exists so the batch tests can prove all-or-nothing
+with one product that can satisfy a request and one that cannot):
 
 | Test | Proves |
 |---|---|
@@ -240,6 +323,18 @@ seeded with one record — `product_id: "p1"`, 100 available, 0 reserved — bef
 | `test_release_returns_stock_to_available` | Reserve 30 then release 30 restores 100 available, 0 reserved. |
 | `test_confirm_removes_reserved_without_changing_available` | Reserve 30 then confirm 30 leaves 70 available (unchanged from reserve) and 0 reserved. |
 | `test_reserve_zero_or_negative_is_rejected` | `quantity=0` and `quantity=-5` both return 400. |
+| `test_batch_reserve_reserves_every_product` | Reserving two different products in one call moves both correctly. |
+| `test_batch_reserve_is_all_or_nothing` | p1 (sufficient) + p2 (impossible) in one basket → 409, and **p1 is left completely untouched** despite its own line being fine — the key test for the saga. |
+| `test_batch_reserve_names_the_product_that_failed` | The 409's detail names the specific product that failed (p2), not p1 — `CancellationReasons` is positional. |
+| `test_batch_reserve_aggregates_duplicate_lines` | The same product on two basket lines (4 + 3) reserves 7 as one DynamoDB operation, not two — DynamoDB forbids two operations on the same key in one transaction. |
+| `test_batch_reserve_aggregated_total_is_what_gets_checked` | Two lines that individually fit (3 + 3 against 5 available) but don't in aggregate are rejected — checking lines individually would oversell by one. |
+| `test_batch_release_returns_everything_to_available` | Batch release across two products restores both correctly. |
+| `test_batch_release_is_all_or_nothing` | One line's release exceeding what's reserved rejects the whole batch — a half-completed compensation would be worse than none. |
+| `test_batch_confirm_clears_reserved_without_touching_available` | Batch confirm across two products clears `reserved_quantity` only. |
+| `test_batch_confirm_is_all_or_nothing` | Same all-or-nothing guarantee on the confirm step. |
+| `test_batch_reserve_unknown_product_is_rejected` | A product with no inventory record fails the condition (a missing attribute satisfies no comparison) — rejected, nothing else in the basket touched. |
+| `test_batch_reserve_empty_list_is_rejected` | An empty list returns 400. |
+| `test_batch_reserve_zero_or_negative_quantity_is_rejected` | Rejected by the `StockOperation` model (`gt=0`) before any DynamoDB call. |
 
 **Not tested:** `add_stock`; `create_stock_record` (and therefore `consumer.py` end to end) has
 no test anywhere in the repository — the SQS consumer's only verification is the manual,
@@ -1201,6 +1296,22 @@ or confirm. If the inventory HTTP API were ever deployed under this same role, e
 except `add_stock`'s initial-creation path would fail with an access-denied error. This is
 recorded as a known gap in `docs/PROJECT_BRIEF.md`.
 
+**`dynamodb:TransactWriteItems` — explicit, though not strictly required.** `product-api`,
+`inventory-api`, and `order-api` all call `dynamodb_client.transact_write_items()`
+(`create_product`, the batch reserve/release/confirm operations, and
+`set_status_and_publish` respectively). DynamoDB authorizes a `TransactWriteItems` call against
+the **constituent per-item action** (`Put`/`Update`) on each table it touches, not a separate
+top-level action name — confirmed empirically against the live roles: `aws iam
+simulate-principal-policy` reports `implicitDeny` for the literal action
+`dynamodb:TransactWriteItems` (the simulator only checks the policy text, and has no visibility
+into DynamoDB's request-time decomposition), yet a real transaction against the same role
+succeeds with no `AccessDeniedException` anywhere in CloudWatch. `dynamodb:TransactWriteItems`
+is nonetheless listed explicitly in all three roles' policies, scoped to exactly the tables each
+transaction touches — added purely so the policy is self-documenting about what each role does,
+without requiring a reader to know this authorization nuance. Confirmed additive: granting an
+action that authorization doesn't require cannot change the outcome of anything already allowed
+(`terraform plan` showed the three role-policy updates with `0 to destroy`).
+
 **PCI scope reduction (ADR-007, ADR-036):** the `PaymentProvider` interface
 (`app/providers/base.py`) is the structural boundary: `charge()` accepts `amount: Decimal` and
 `payment_token: str`, never any card field. `Payment` (`app/models.py`) has no field for card
@@ -1233,11 +1344,16 @@ default rather than configuring it explicitly. ADR-019 discusses customer-manage
 mitigation for Schrems II concerns (US ownership of AWS notwithstanding EU data residency), but
 this is target-state reasoning, not something configured anywhere in Terraform.
 
-**Authentication and authorisation:** not implemented. There is no Cognito integration, no JWT
-validation, no API key check, and no auth middleware anywhere in `backend/services/`. Every
-endpoint in every deployed and undeployed service is completely open. Cognito is designed
-(ADR-003) — direct sign-in plus a small federation demo, groups mapped to RBAC roles — but is
-listed as not-yet-deployed work in `docs/PROJECT_BRIEF.md`'s Next Steps.
+**Authentication and authorisation:** Cognito is deployed in `eu-west-1`: user pool
+`eu-west-1_dvHPkvsnQ`, public SPA client `446p56998av63mo3j5gg63u774`, and managed Cognito
+domain `smartretailx-dev-jashok.auth.eu-west-1.amazoncognito.com`. The React application uses
+OAuth 2.0 authorisation-code flow with PKCE; no browser secret or AWS credential exists. API
+Gateway validates Cognito JWTs on protected routes before invoking the Lambdas. The services
+then consume only the trusted claims forwarded by API Gateway: `admin` controls catalogue,
+stock, payment and recovery actions; `customers` can create and view only their own orders; an
+order's `customer_id` is always replaced by the Cognito `sub`. The post-confirmation Lambda
+automatically assigns newly confirmed sign-ups to `customers`; administrators are assigned
+deliberately and never automatically.
 
 ---
 
@@ -1536,6 +1652,37 @@ field's value, and the API stays silent about the substitution rather than rejec
 combination outright. A single successful `apply` does not prove a configuration is stable;
 only a second `plan` with zero changes does.
 
+**13. The declined-payment path stored the entire raw `Payment` JSON as `failure_reason`
+instead of the clean message.** Found by live testing against deployed AWS, not by static
+review. *Symptom:* a real declined order's stored `failure_reason` was the full serialized
+`Payment` record — `{"payment_id": "...", "order_id": "...", ..., "failure_reason": "Card
+declined by issuer", ...}` — rather than just `"Card declined by issuer"`. *Root cause:*
+`saga.py`'s `DownstreamRejected` handler for the payment step used `str(exc.detail)` for the
+stored reason. `exc.detail` comes from `clients._detail()`, which returns `body["detail"]` only
+when the response body has a `"detail"` key — the shape `HTTPException` produces. The Payment
+service's 402 response deliberately does **not** use that shape: it returns the full `Payment`
+record instead, precisely so the saga can read `payment_id` and `failure_reason` off it (stated
+in `charge_payment()`'s own docstring). Since there's no `"detail"` key, `_detail()` fell
+through to its fallback, `response.text` — the entire raw JSON. `payment_id` was already being
+read correctly from `exc.body` two lines above; `failure_reason` wasn't extracted the same way.
+Not a safety bug — compensation still ran correctly (stock still released, `payment_id` still
+retained) — a data-quality bug in the stored message only. *Fix:* read `failure_reason` from
+`exc.body` the same way `payment_id` already was:
+`(exc.body or {}).get("failure_reason") or str(exc.detail)`. *Test gap that let it ship:*
+`test_declined_payment_releases_stock_and_fails`'s mock constructed a `DownstreamRejected` whose
+`body` didn't include a `failure_reason` key at all, so the assertion
+(`"declined" in body["failure_reason"].lower()`) passed either way — the mock didn't reflect the
+real Payment service's response shape. Hardened to include `failure_reason` in the mock body
+with a value distinct from `detail`, so a regression back to reading the wrong field would now
+fail the test. *Verified fixed, end to end, against deployed AWS*: rebuilt the image
+(`docker build --provenance=false`), pushed to
+`smartretailx-dev-order-service:latest` (digest `92993077c515e0b7...`), ran `aws lambda
+update-function-code` against `smartretailx-dev-order-api`, then placed a live declined order
+against the deployed API — `failure_reason` now returns `"Card declined by issuer"`. *Illustrates:*
+a test mock that's more convenient to write than accurate to the real dependency's response
+shape can hide exactly the bug that dependency's actual behaviour would trigger — the mock and
+the bug were introduced together, and only fixed together.
+
 ---
 
 ## 8. Known Limitations
@@ -1546,8 +1693,8 @@ only a second `plan` with zero changes does.
   `kind`, but never deployed to managed EKS (ADR-001) — cost.
 - Full warm-standby multi-region DR (Route 53 failover, standby compute) is designed only
   (ADR-010); no `aws_dynamodb_table` in this repository configures Global Tables replicas.
-- Full Cognito federation is designed (ADR-003) but not deployed; there is currently no
-  authentication of any kind, deployed or otherwise (§5).
+- Social/enterprise Cognito federation is not configured. Direct Cognito sign-in, group RBAC,
+  API Gateway JWT validation and ownership checks are deployed (§5).
 - Products are soft-deleted (`active` flag) with no hard-delete endpoint, by design (ADR-037).
 - `MockPaymentProvider` stands in for a real PSP; the abstraction (ADR-036) is designed so that
   adding a real provider requires one new class and one factory branch, but no real provider is
@@ -1577,8 +1724,6 @@ only a second `plan` with zero changes does.
 - Evidence capture (screenshots, logs) is significantly behind the actual build — only two
   screenshots exist in `evidence/screenshots/`, both for the Product service, despite
   substantially more having been built and deployed since.
-- The inventory consumer's IAM role grants only `dynamodb:PutItem`; deploying the inventory HTTP
-  API as a Lambda under the same role would fail on every read/update operation (§5).
 - The table-creation scripts (`scripts/create_*.py`) hardcode a `DYNAMODB_LOCAL_ENDPOINT`
   defaulting to `http://localhost:8000` and always pass dummy credentials, unconditionally —
   unlike the services' own `repository.py` files, which are environment-conditional. This is
@@ -1592,14 +1737,11 @@ only a second `plan` with zero changes does.
   to trigger the "record not found" branch; the final `ValueError` is worded for a "failed"
   payment though it is only realistically reached via a `REFUNDED` race) — identified in code
   review, left unchanged as harmless.
-- No compensation retry queue exists for the (as yet undesigned-in-code) Order saga;
-  `COMPENSATION_FAILED` (ADR-035) is a decision recorded for future work, not something any
-  current code implements, since the Order service does not exist.
-- The Payment service has never been deployed to AWS in any form (no Lambda, no ECR image, no
-  API Gateway route). Its DynamoDB table is, however, now provisioned in Terraform with
-  point-in-time recovery enabled.
-- The Product and Inventory HTTP APIs are likewise not deployed behind API Gateway — only their
-  auxiliary Lambdas (the outbox relay and the SQS consumer, respectively) are deployed.
+- No compensation retry queue exists for the Order saga. `COMPENSATION_FAILED` is persisted and
+  visible to administrators, but automated retry/reconciliation remains future work.
+- Product, Inventory, Payment and Order are deployed as separate Lambda container services behind
+  API Gateway. Their deployed digest is selected by Terraform after each deliberate ECR image
+  push; the production React build remains to be uploaded.
 - No CI/CD pipeline exists — there is no `.github/` directory or equivalent in this repository.
 - `product-service/app/events.py` (`publish_product_created`, a direct-EventBridge-publish
   function) is dead code: it exists on disk but is not imported or called by `main.py`, which
@@ -1615,5 +1757,85 @@ only a second `plan` with zero changes does.
 - CloudWatch dashboards, alarms, and X-Ray tracing (ADR-009) are designed but not implemented —
   no `aws_cloudwatch_dashboard`, `aws_cloudwatch_metric_alarm` (beyond the account-level billing
   alarm mentioned in `docs/PROJECT_BRIEF.md`), or X-Ray configuration exists in Terraform.
-- Order, Notification, and User Profile services do not exist — no code beyond an empty
-  placeholder directory for each.
+- Notification and User Profile services do not exist — no code beyond empty placeholder
+  directories for each. The Order service is implemented and deployed.
+
+---
+
+## Update — 2026-08-17: live Cognito/RBAC verification and frontend application
+
+The Cognito/RBAC Terraform change was applied after the four HTTP service images were built and
+pushed. The live smoke checks passed:
+
+- A request to `GET /api/v1/orders` without an `Authorization` header returned **401** from the
+  API Gateway JWT authorizer.
+- A user in `customers` completed Cognito Hosted UI sign-in, returned to the React application,
+  and received a JWT that successfully read that user's own order history.
+- The same customer JWT received **403** when attempting `POST /api/v1/products`; the Product
+  service independently enforced the `admin` group after Gateway validation.
+
+Evidence screenshots are titled **CP-021 – API rejects a request without a JWT**,
+**CP-021 – Customer Cognito sign-in**, **CP-021 – Customer JWT accepted for own orders**, and
+**CP-021 – Customer blocked from administrator action**. These prove authentication,
+authorisation and customer-vs-administrator separation, not merely configuration existence.
+
+The local React application now contains the customer flow: catalogue and product detail, a
+localStorage basket, tokenised mock-payment checkout, and protected order history. It also
+contains an administrator-only workspace for product creation/editing/activation, stock lookup
+and restocking, recovery-order inspection, payment lookup and refunds. The checkout form accepts
+only the mock provider's payment token, never card data. The production build completed
+successfully; deployment to the existing S3/CloudFront hosting stack and live end-to-end UI
+evidence remain outstanding.
+
+**Amended — the "customer JWT successfully read own orders" evidence above should be treated as
+superseded, not trusted, until it is recaptured.** Actually exercising the deployed admin panel
+(not just reading the code) surfaced two real bugs that this update's own smoke checks could not
+have caught, because the smoke checks never exercised group-based authorisation on a genuine
+session:
+
+1. **The frontend was sending the Cognito access token, not the ID token, as the bearer
+   credential.** Cognito access tokens do not carry `cognito:groups` — that claim only exists on
+   the ID token. This means `require_admin`/`require_customer` (`app/auth.py` in every service)
+   were reading an empty group set for every signed-in user, admin or customer, regardless of
+   their real role. Confirmed directly against the live API Gateway access logs
+   (`/aws/apigateway/smartretailx-dev-api`): `routeKey: "POST /api/v1/products", status: 403` for
+   what was in fact an administrator account — the JWT itself validated fine (API Gateway would
+   have rejected an invalid token with 401 before the Lambda ran at all), the group check inside
+   the Lambda was what failed. The "customer JWT can read own orders" claim above cannot be true
+   under this bug — `require_customer` would 403 a real customer for the identical reason — so
+   that evidence either predates the bug being introduced or was not actually captured against a
+   real signed-in session as described. Fixed: `AuthProvider.jsx` now sends `session.tokens.id_token`
+   instead of `session.tokens.access_token`, exposed as `idToken` throughout (renamed from
+   `accessToken` everywhere it's used, specifically so it can't be mistaken for the OAuth-
+   conventional choice by a future reader). No Terraform change was needed — API Gateway's JWT
+   authorizer already checks the `aud` claim for ID tokens the same way it checks `client_id` for
+   access tokens, and the configured audience matches either.
+2. **`GET /api/v1/products?include_inactive=true` — the admin catalogue view — could never
+   succeed, independent of bug 1.** No route in `jwt_routes` ever attached the JWT authorizer to
+   `GET /api/v1/products`; it only ever matched the original open `ANY /api/v1/products` catch-all.
+   Without the authorizer attached to the matched route, API Gateway never populates
+   `requestContext.authorizer`, so the in-app `if include_inactive: require_admin(request)` check
+   always saw empty claims and always returned 401 — regardless of what token, valid or not, the
+   caller sent. This couldn't be fixed the same way as bug 1, because the route legitimately
+   serves two different audiences (public browsing vs. admin-only) through one path and query
+   parameter, and API Gateway authorizers attach per-route, not per-query-string. Fixed by adding
+   a dedicated `GET /api/v1/products/admin` route (its own `jwt_routes` entry, its own
+   `require_admin`-gated handler, `include_inactive=True` unconditionally) and deleting the
+   now-dead `include_inactive` parameter and branch from the public route entirely, rather than
+   leaving an endpoint that could never succeed sitting in the codebase looking like it worked.
+
+**Why the existing test suite passed through both bugs.** Every test in all four services sets
+`AUTH_TEST_MODE=true`, which makes `claims_from_request()` return a hardcoded
+`{"sub": "test-admin", "cognito:groups": [...]}` unconditionally — bypassing the exact code path
+(reading real forwarded claims) that bug 1 broke. Grepping all four test suites for any assertion
+on a 401 or 403 status returns zero matches. The test suite is structurally incapable of catching
+this class of bug; "all tests passing" was never evidence this worked. At least one real
+401/403 test per service is worth adding before RBAC is called verified (tracked under CP-035).
+
+**Current honest state (as of this amendment):** both fixes exist in code and are covered by a
+clean `terraform validate`, all 77 backend tests, and a clean frontend build — but neither is
+deployed. `terraform plan` shows exactly one pending resource (the new `/products/admin` route);
+`product-service`'s Lambda has not been rebuilt since the fix; the S3 frontend bucket, checked
+directly, is still empty. CP-021 is downgraded to in-progress in `CHECKPOINT_STATUS.md`
+accordingly, and the four screenshots described above should be recaptured after deployment
+before being cited as evidence again.
