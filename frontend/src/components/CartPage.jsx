@@ -3,7 +3,7 @@ import { createOrder } from "../api/orders.js";
 import { formatPrice } from "../lib/currency.js";
 import { validateEmail, validatePhone, validateRequired } from "../lib/validation.js";
 import CardFields, { deriveMockToken, validateCard } from "./CardFields.jsx";
-import ImagePlaceholder from "./ImagePlaceholder.jsx";
+import ProductImage from "./ProductImage.jsx";
 import { consumeCheckoutDraft, saveCheckoutDraft } from "../lib/checkoutDraft.js";
 
 const blankAddress = { recipient_name: "", street: "", city: "", postal_code: "", country: "" };
@@ -123,11 +123,7 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
         <div className="mt-6 divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white">
           {cart.map((item) => (
             <div key={item.id} className="flex items-center gap-4 p-4">
-              {item.image_url ? (
-                <img src={item.image_url} alt={item.name} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
-              ) : (
-                <ImagePlaceholder className="h-16 w-16 shrink-0 rounded-lg" />
-              )}
+              <ProductImage src={item.image_url} alt={item.name} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
               <div className="min-w-0 flex-1">
                 <p className="font-semibold text-stone-900">{item.name}</p>
                 <p className="text-sm text-stone-500">{formatPrice(item.price)} each</p>

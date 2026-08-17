@@ -26,3 +26,21 @@ export function fetchMyOrders({ limit = 20, cursor, idToken } = {}) {
 export function fetchAttentionOrders(idToken) {
   return request("/api/v1/orders/stuck", { idToken });
 }
+
+// Admin-only — every order across every customer, not just the signed-in
+// user's own (see order-service/app/main.py's list_all_orders_admin for why
+// this is a separate, gated endpoint rather than an option on the customer
+// listing above).
+export function fetchAllOrdersAdmin({ limit = 20, cursor, idToken } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+  return request(`/api/v1/orders/admin?${params.toString()}`, { idToken });
+}
+
+export function updateDeliveryStatus(orderId, deliveryStatus, idToken) {
+  return request(`/api/v1/orders/${encodeURIComponent(orderId)}/delivery-status`, {
+    method: "PATCH",
+    idToken,
+    body: { delivery_status: deliveryStatus },
+  });
+}

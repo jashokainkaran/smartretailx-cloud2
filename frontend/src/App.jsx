@@ -5,6 +5,7 @@ import ProductDetail from "./components/ProductDetail.jsx";
 import CartPage from "./components/CartPage.jsx";
 import OrdersPage from "./components/OrdersPage.jsx";
 import AdminPanel from "./components/AdminPanel.jsx";
+import CustomersOrdersPage from "./components/CustomersOrdersPage.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import CustomerNavbar from "./components/CustomerNavbar.jsx";
 import AdminNavbar from "./components/AdminNavbar.jsx";
@@ -14,7 +15,7 @@ import Toast from "./components/Toast.jsx";
 import { consumeReturnRoute } from "./lib/checkoutDraft.js";
 
 const CART_KEY = "smartretailx.cart";
-const KNOWN_ROUTES = ["catalogue", "cart", "orders", "admin", "dashboard"];
+const KNOWN_ROUTES = ["catalogue", "cart", "orders", "admin", "dashboard", "customers"];
 
 const PAGE_TITLES = {
   catalogue: "Shop",
@@ -22,6 +23,7 @@ const PAGE_TITLES = {
   orders: "Your orders",
   dashboard: "Dashboard",
   admin: "Products & orders",
+  customers: "Customers & orders",
   notfound: "Page not found",
 };
 
@@ -192,6 +194,8 @@ export default function App() {
           <Dashboard idToken={idToken} onNavigate={navigate} />
         ) : route === "admin" && isAdmin ? (
           <AdminPanel idToken={idToken} />
+        ) : route === "customers" && isAdmin ? (
+          <CustomersOrdersPage idToken={idToken} />
         ) : route === "notfound" ? (
           <NotFound onGoHome={() => navigate("catalogue")} />
         ) : (

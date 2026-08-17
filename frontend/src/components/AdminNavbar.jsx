@@ -17,7 +17,8 @@ export default function AdminNavbar({ route, navigate }) {
   const links = (
     <>
       <NavButton active={route === "dashboard"} onClick={() => go("dashboard")}>Dashboard</NavButton>
-      <NavButton active={route === "admin"} onClick={() => go("admin")}>Products &amp; orders</NavButton>
+      <NavButton active={route === "admin"} onClick={() => go("admin")}>Products</NavButton>
+      <NavButton active={route === "customers"} onClick={() => go("customers")}>Customers &amp; orders</NavButton>
       <NavButton active={route === "catalogue"} onClick={() => go("catalogue")}>View store</NavButton>
     </>
   );

@@ -45,6 +45,17 @@ export function AuthProvider({ children }) {
     restoreOrCompleteSession();
   }, []);
 
+  useEffect(() => {
+    // Fired by api/http.js the moment any request reveals the token is
+    // dead — clears the session so the header/routes reflect it immediately
+    // instead of waiting for a page reload to notice.
+    function handleSessionExpired() {
+      setSession(null);
+    }
+    window.addEventListener("smartretailx:session-expired", handleSessionExpired);
+    return () => window.removeEventListener("smartretailx:session-expired", handleSessionExpired);
+  }, []);
+
   const value = {
     status,
     error,

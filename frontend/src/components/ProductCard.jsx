@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import ImagePlaceholder from "./ImagePlaceholder.jsx";
+import ProductImage from "./ProductImage.jsx";
 import { formatPrice } from "../lib/currency.js";
 import { fetchStock } from "../api/inventory.js";
 
@@ -45,15 +45,7 @@ export default function ProductCard({ product, onSelect, onAddToCart, idToken })
       className="group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-400"
     >
       <div className="relative">
-        {product.image_url ? (
-          <img
-            src={product.image_url}
-            alt={product.name}
-            className="h-44 w-full object-cover"
-          />
-        ) : (
-          <ImagePlaceholder className="h-44 w-full" />
-        )}
+        <ProductImage src={product.image_url} alt={product.name} className="h-44 w-full object-cover" />
         {outOfStock && (
           <span className="absolute left-2 top-2 rounded-full bg-red-600 px-2 py-0.5 text-xs font-semibold text-white">
             Out of stock

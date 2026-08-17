@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { fetchProductById } from "../api/products.js";
 import { fetchStock } from "../api/inventory.js";
-import ImagePlaceholder from "./ImagePlaceholder.jsx";
+import ProductImage from "./ProductImage.jsx";
 import LoadingState from "./LoadingState.jsx";
 import ErrorState from "./ErrorState.jsx";
 import { formatPrice } from "../lib/currency.js";
@@ -62,15 +62,7 @@ export default function ProductDetail({ productId, onBack, onAddToCart, idToken 
 
       {product && !loading && !error && (
         <div className="grid grid-cols-1 gap-8 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm md:grid-cols-2 md:p-8">
-          {product.image_url ? (
-            <img
-              src={product.image_url}
-              alt={product.name}
-              className="h-72 w-full rounded-xl object-cover md:h-full"
-            />
-          ) : (
-            <ImagePlaceholder className="h-72 w-full rounded-xl md:h-full" />
-          )}
+          <ProductImage src={product.image_url} alt={product.name} className="h-72 w-full rounded-xl object-cover md:h-full" />
 
           <div className="flex flex-col gap-3">
             <span className="w-fit rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700">

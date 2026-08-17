@@ -79,6 +79,17 @@ export function clearStoredSession() {
   window.sessionStorage.removeItem(storageKey);
 }
 
+// Lets api/http.js reject an already-dead token before spending a round trip
+// on it, and produce a clear message instead of a bare 401.
+export function isTokenExpired(token) {
+  try {
+    const { exp } = decodeJwtPayload(token);
+    return !exp || exp * 1000 <= Date.now();
+  } catch {
+    return true;
+  }
+}
+
 export function isAuthenticationCallback() {
   const parameters = new URLSearchParams(window.location.search);
   return parameters.has("code") || parameters.has("error");

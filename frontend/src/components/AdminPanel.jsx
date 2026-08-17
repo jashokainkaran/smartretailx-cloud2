@@ -4,7 +4,7 @@ import { addStock, fetchStock } from "../api/inventory.js";
 import { fetchAttentionOrders } from "../api/orders.js";
 import { fetchPayment, refundPayment } from "../api/payments.js";
 import { StatusBadge } from "./OrdersPage.jsx";
-import ImagePlaceholder from "./ImagePlaceholder.jsx";
+import ProductImage from "./ProductImage.jsx";
 import { formatPrice } from "../lib/currency.js";
 
 const blankProduct = { name: "", description: "", price: "", category: "", image_url: "" };
@@ -114,6 +114,7 @@ export default function AdminPanel({ idToken }) {
                       <th className="pb-3 pr-3"></th>
                       <th className="pb-3">Product</th>
                       <th className="pb-3">Price</th>
+                      <th className="pb-3">Stock</th>
                       <th className="pb-3">Status</th>
                       <th className="pb-3">Actions</th>
                     </tr>
@@ -122,17 +123,14 @@ export default function AdminPanel({ idToken }) {
                     {products.map((product) => (
                       <tr key={product.id} className="border-b border-stone-100">
                         <td className="py-3 pr-3">
-                          {product.image_url ? (
-                            <img src={product.image_url} alt={product.name} className="h-12 w-12 rounded-md object-cover" />
-                          ) : (
-                            <ImagePlaceholder className="h-12 w-12 rounded-md" />
-                          )}
+                          <ProductImage src={product.image_url} alt={product.name} className="h-12 w-12 rounded-md object-cover" />
                         </td>
                         <td className="py-3 font-medium text-stone-900">
                           {product.name}
                           <p className="font-normal text-stone-500">{product.category}</p>
                         </td>
                         <td className="py-3">{formatPrice(product.price)}</td>
+                        <td className="py-3"><StockCell productId={product.id} idToken={idToken} /></td>
                         <td className="py-3"><StatusBadge status={product.active ? "ACTIVE" : "INACTIVE"} /></td>
                         <td className="py-3">
                           <div className="flex gap-3">
@@ -205,11 +203,7 @@ function ProductEditor({ idToken, product, onSaved, onCancel, onError }) {
         <label className="text-sm font-medium text-stone-700">
           Image URL
           <div className="mt-1 flex items-center gap-3">
-            {form.image_url ? (
-              <img src={form.image_url} alt="" className="h-11 w-11 shrink-0 rounded-md object-cover" />
-            ) : (
-              <ImagePlaceholder className="h-11 w-11 shrink-0 rounded-md" />
-            )}
+            <ProductImage src={form.image_url} className="h-11 w-11 shrink-0 rounded-md object-cover" />
             <input
               type="text"
               value={form.image_url}
@@ -234,6 +228,25 @@ function ProductEditor({ idToken, product, onSaved, onCancel, onError }) {
         </button>
       </form>
     </section>
+  );
+}
+
+function StockCell({ productId, idToken }) {
+  const [available, setAvailable] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchStock(productId, idToken)
+      .then((stock) => { if (!cancelled) setAvailable(stock.available_quantity); })
+      .catch((err) => { if (!cancelled) setAvailable(err.status === 404 ? 0 : null); });
+    return () => { cancelled = true; };
+  }, [productId, idToken]);
+
+  if (available === null) return <span className="text-stone-400">—</span>;
+  return (
+    <span className={available <= 0 ? "font-medium text-red-600" : "text-stone-700"}>
+      {available}
+    </span>
   );
 }
 
