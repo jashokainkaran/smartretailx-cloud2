@@ -11,6 +11,8 @@ __pycache__/
 # Node / frontend
 node_modules/
 dist/
+.vite/
+.pnpm-store/
 
 # Terraform — state contains resource attributes in plaintext, never commit
 .terraform/
