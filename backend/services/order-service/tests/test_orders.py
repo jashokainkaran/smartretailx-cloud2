@@ -296,6 +296,10 @@ def test_published_event_carries_enough_to_send_a_receipt_with_no_callback(calls
     assert data["items"] == [
         {"product_id": "p1", "quantity": 2, "unit_price": "10.00", "name": "Widget"}
     ]
+    # The Notification service logs this alongside its own — without it in
+    # the event itself (not just Order's own log lines), there is no way to
+    # trace one customer's request across both services' logs.
+    assert "correlation_id" in data
 
 
 def test_rejected_order_event_also_carries_contact_email_and_items(calls, monkeypatch):
@@ -316,6 +320,7 @@ def test_rejected_order_event_also_carries_contact_email_and_items(calls, monkey
     assert data["items"] == [
         {"product_id": "p1", "quantity": 2, "unit_price": "10.00", "name": "Widget"}
     ]
+    assert "correlation_id" in data
 
 
 def test_confirmed_order_leaves_the_recovery_index(calls):

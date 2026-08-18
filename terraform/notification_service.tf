@@ -33,10 +33,14 @@ resource "aws_ecr_lifecycle_policy" "notification_service" {
 }
 
 # ---------- Idempotency table ----------
-# SQS is at-least-once. A conditional PutItem keyed on the event's own
-# event_id is what stops a duplicate delivery from sending the same receipt
-# twice — the same trick create_stock_record() already uses for the
-# Inventory consumer (ADR-022).
+# SQS is at-least-once. A duplicate delivery is stopped by a plain read
+# (already_sent) before the send, and a plain write (mark_sent) only after
+# it succeeds — not a conditional PutItem keyed on event_id the way
+# create_stock_record() does it for the Inventory consumer (ADR-022). That
+# shape doesn't fit here: creating a stock record IS the outcome, but
+# marking-sent and actually-sending-the-email are two separate actions, and
+# a crash between them must not make a genuinely unsent receipt look sent.
+# See repository.py's own docstring for the full reasoning.
 
 resource "aws_dynamodb_table" "notifications" {
   name         = "${local.prefix}-notifications"
@@ -204,12 +208,14 @@ resource "aws_iam_role_policy" "notification_service" {
         Resource = aws_sqs_queue.notifications.arn
       },
       {
-        # PutItem only, conditional on attribute_not_exists in code — the
-        # same least-privilege shape as the Inventory consumer's role. This
-        # role never needs to read or update a notification record, only
-        # ever record that one was sent, once.
-        Effect   = "Allow"
-        Action   = "dynamodb:PutItem"
+        # GetItem for the already_sent() check, PutItem for mark_sent() —
+        # the handler reads before it writes (see repository.py), so it
+        # needs both, not just the write half.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ]
         Resource = aws_dynamodb_table.notifications.arn
       },
       {
@@ -225,18 +231,27 @@ resource "aws_iam_role_policy" "notification_service" {
         Resource = aws_ses_email_identity.sender.arn
       },
       local.xray_statement,
-      local.vpc_access_statement,
     ]
   })
 }
 
 # ---------- The function ----------
 
+# Same reasoning as http_service's own data.aws_ecr_image lookup: :latest is
+# a mutable tag, so referencing it directly means a plan can't tell a freshly
+# pushed image apart from an old one, and apply silently keeps running
+# whatever code the Lambda already had. Resolving it to a digest here makes
+# a new push something `terraform apply` actually deploys.
+data "aws_ecr_image" "notification_service" {
+  repository_name = aws_ecr_repository.notification_service.name
+  image_tag       = "latest"
+}
+
 resource "aws_lambda_function" "notification_service" {
   function_name = "${local.prefix}-notification-service"
   role          = aws_iam_role.notification_service.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.notification_service.repository_url}:latest"
+  image_uri     = "${aws_ecr_repository.notification_service.repository_url}@${data.aws_ecr_image.notification_service.image_digest}"
 
   image_config {
     command = ["app.handler.handler"]
@@ -252,18 +267,14 @@ resource "aws_lambda_function" "notification_service" {
     }
   }
 
-  # Same placement as the Inventory consumer: private subnets, no internet
-  # route. SQS is polled by the Lambda service from outside the VPC, so the
-  # trigger itself needs no endpoint — only the outbound DynamoDB and SES
-  # calls need a path out, and SES has no VPC endpoint used here, so this
-  # function needs the same public-egress consideration order-api already
-  # has. See the note on aws_lambda_function.http_service["order"] for the
-  # precedent.
-  vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.lambda.id]
-  }
-
+  # Deliberately NOT in the VPC, unlike the Inventory consumer. This
+  # function has to call SES, and there is no VPC endpoint for SES in this
+  # account (only DynamoDB and EventBridge have one) and no NAT gateway
+  # (cost, by design — see vpc.tf). A private subnet with neither would give
+  # this Lambda no path out at all; every send would hang until it timed
+  # out. Same trade-off order-api already makes for the same reason: normal
+  # internet egress, a narrowly-scoped IAM role (GetItem/PutItem on one
+  # table, SendEmail as one identity) bounding the risk.
   tracing_config {
     mode = "Active"
   }
@@ -282,4 +293,11 @@ resource "aws_lambda_event_source_mapping" "notifications_queue" {
 
   batch_size                         = 10
   maximum_batching_window_in_seconds = 5
+
+  # Without this, a batch is all-or-nothing: if the handler returns
+  # normally after quietly skipping one bad record (e.g. missing
+  # contact_email), SQS deletes the WHOLE batch, that record included, and
+  # it never reaches the DLQ. This lets the handler report exactly which
+  # message(s) failed, so only those stay in the queue and retry.
+  function_response_types = ["ReportBatchItemFailures"]
 }

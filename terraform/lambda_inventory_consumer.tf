@@ -77,11 +77,17 @@ resource "aws_iam_role_policy" "inventory_consumer" {
 
 # ---------- The function ----------
 
+# Same image, same repo, same :latest tag the inventory-api HTTP Lambda
+# already resolves via data.aws_ecr_image.http_service["inventory"] in
+# lambda_http_services.tf — reused here rather than adding a second lookup
+# of the exact same repository+tag. One image, two entrypoints (this
+# function's own command below picks the consumer handler), always pinned
+# to the same digest at any given apply.
 resource "aws_lambda_function" "inventory_consumer" {
   function_name = "${local.prefix}-inventory-consumer"
   role          = aws_iam_role.inventory_consumer.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.inventory_service.repository_url}:latest"
+  image_uri     = "${aws_ecr_repository.inventory_service.repository_url}@${data.aws_ecr_image.http_service["inventory"].image_digest}"
 
   image_config {
     command = ["app.consumer.handler"]

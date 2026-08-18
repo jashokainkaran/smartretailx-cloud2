@@ -46,9 +46,11 @@ def confirmed_event(event_id="evt-1", **overrides):
         "total": "20.00",
         "status": "CONFIRMED",
         "items": [{"product_id": "p1", "quantity": 2, "unit_price": "10.00", "name": "Widget"}],
+        "correlation_id": "corr-1",
     }
     data.update(overrides)
     return {
+        "messageId": f"msg-{event_id}",
         "body": __import__("json").dumps({
             "detail-type": "OrderConfirmed",
             "detail": {"event_id": event_id, "event_version": "1.0", "data": data},
@@ -64,9 +66,11 @@ def failed_event(event_id="evt-2", **overrides):
         "recipient_name": "Sam",
         "status": "REJECTED",
         "reason": "Insufficient stock for: p1",
+        "correlation_id": "corr-2",
     }
     data.update(overrides)
     return {
+        "messageId": f"msg-{event_id}",
         "body": __import__("json").dumps({
             "detail-type": "OrderFailed",
             "detail": {"event_id": event_id, "event_version": "1.0", "data": data},
@@ -208,7 +212,7 @@ def test_handler_sends_and_marks_a_new_confirmed_event(monkeypatch):
 
     result = handler({"Records": [confirmed_event()]}, {})
 
-    assert result == {"sent": 1, "duplicates": 0, "skipped": 0}
+    assert result == {"sent": 1, "duplicates": 0, "skipped": 0, "batchItemFailures": []}
     assert len(sent) == 1
     assert repository.already_sent("evt-1") is True
 
@@ -220,17 +224,24 @@ def test_handler_skips_a_duplicate_delivery(monkeypatch):
 
     result = handler({"Records": [confirmed_event()]}, {})
 
-    assert result == {"sent": 0, "duplicates": 1, "skipped": 0}
+    assert result == {"sent": 0, "duplicates": 1, "skipped": 0, "batchItemFailures": []}
     assert sent == []  # never called send_receipt at all for the duplicate
 
 
 def test_handler_skips_and_does_not_mark_an_event_with_no_contact_email(monkeypatch):
+    """A missing contact_email must be reported as a batch item failure, not
+    just silently skipped — without that, SQS treats the whole batch
+    (including this record) as successfully processed and deletes it,
+    losing the receipt forever instead of retrying/DLQing it."""
     sent = []
     monkeypatch.setattr("app.handler.send_receipt", lambda *a: sent.append(a))
 
     result = handler({"Records": [confirmed_event(contact_email=None)]}, {})
 
-    assert result == {"sent": 0, "duplicates": 0, "skipped": 1}
+    assert result == {
+        "sent": 0, "duplicates": 0, "skipped": 1,
+        "batchItemFailures": [{"itemIdentifier": "msg-evt-1"}],
+    }
     assert sent == []
     # Not marked as sent — nothing was actually sent, so a later fix (e.g.
     # backfilling the email) must still be able to process this event.
@@ -257,7 +268,7 @@ def test_handler_processes_a_failed_order_event(monkeypatch):
 
     result = handler({"Records": [failed_event()]}, {})
 
-    assert result == {"sent": 1, "duplicates": 0, "skipped": 0}
+    assert result == {"sent": 1, "duplicates": 0, "skipped": 0, "batchItemFailures": []}
     assert sent[0][0] == "OrderFailed"
 
 
@@ -273,4 +284,4 @@ def test_handler_processes_a_batch_of_mixed_records(monkeypatch):
     ]
     result = handler({"Records": records}, {})
 
-    assert result == {"sent": 2, "duplicates": 1, "skipped": 0}
+    assert result == {"sent": 2, "duplicates": 1, "skipped": 0, "batchItemFailures": []}

@@ -152,6 +152,7 @@ def _reject(order_id: str, customer_id: str, contact_email: str, recipient_name:
             "status": states.REJECTED,
             "reason": reason,
             "items": _line_items_for_event(line_items),
+            "correlation_id": current_correlation_id(),
         },
         failure_reason=reason,
     )
@@ -204,6 +205,7 @@ def _compensate_release(order_id, customer_id, contact_email, recipient_name, li
             "status": states.FAILED,
             "reason": reason,
             "items": _line_items_for_event(line_items),
+            "correlation_id": current_correlation_id(),
         },
         failure_reason=reason,
         payment_id=payment_id,
@@ -253,6 +255,7 @@ def _compensate_refund(order_id, customer_id, contact_email, recipient_name, lin
             "status": states.FAILED,
             "reason": reason,
             "items": _line_items_for_event(line_items),
+            "correlation_id": current_correlation_id(),
         },
         failure_reason=reason,
         payment_id=payment_id,
@@ -295,6 +298,7 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, contact_email: st
                 "status": states.FAILED,
                 "reason": reason,
                 "items": _line_items_for_event(line_items),
+                "correlation_id": current_correlation_id(),
             },
             failure_reason=reason,
         )
@@ -318,6 +322,7 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, contact_email: st
             "total": str(total),
             "status": states.PENDING_ON_DELIVERY,
             "items": _line_items_for_event(line_items),
+            "correlation_id": current_correlation_id(),
         },
     )
 
@@ -486,6 +491,7 @@ def run_checkout(request: OrderCreate):
             "recipient_name": order.shipping_address.recipient_name,
             "total": str(total),
             "items": _line_items_for_event(line_items),
+            "correlation_id": current_correlation_id(),
         },
         payment_id=payment_id,
     )
