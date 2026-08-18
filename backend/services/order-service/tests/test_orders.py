@@ -208,7 +208,7 @@ def raw_order(order_id):
 def test_health():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "healthy"}
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +277,45 @@ def test_confirmed_order_publishes_an_outbox_event(calls):
     assert envelope["event_id"] == records[0]["event_id"]
     assert envelope["data"]["order_id"] == order_id
     assert envelope["data"]["total"] == "20.00"
+
+
+def test_published_event_carries_enough_to_send_a_receipt_with_no_callback(calls):
+    """
+    The Notification service (ADR-006) is designed to send a receipt from
+    the event alone, without calling back to Order or the Product Catalogue
+    for anything. That only holds if the event actually carries a
+    contact_email and full line-item detail — not just an order_id and a
+    total. This is the regression test for that contract.
+    """
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    envelope = json.loads(outbox_records()[0]["payload"])
+    data = envelope["data"]
+    assert data["contact_email"] == "customer@example.com"
+    assert data["recipient_name"] == "Test Customer"
+    assert data["items"] == [
+        {"product_id": "p1", "quantity": 2, "unit_price": "10.00", "name": "Widget"}
+    ]
+
+
+def test_rejected_order_event_also_carries_contact_email_and_items(calls, monkeypatch):
+    """The receipt contract applies to OrderFailed too, not just the happy
+    path — a declined or rejected order still owes the customer an email."""
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Insufficient stock for: p1")
+    ))
+
+    response = client.post("/api/v1/orders", json=basket())
+    order_id = response.json()["order_id"]
+
+    envelope = json.loads(outbox_records()[0]["payload"])
+    data = envelope["data"]
+    assert data["order_id"] == order_id
+    assert data["contact_email"] == "customer@example.com"
+    assert data["recipient_name"] == "Test Customer"
+    assert data["items"] == [
+        {"product_id": "p1", "quantity": 2, "unit_price": "10.00", "name": "Widget"}
+    ]
 
 
 def test_confirmed_order_leaves_the_recovery_index(calls):

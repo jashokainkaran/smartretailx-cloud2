@@ -35,6 +35,11 @@ dynamodb = boto3.resource("dynamodb", **_dynamodb_kwargs)
 table = dynamodb.Table(config.INVENTORY_TABLE)
 
 
+def check_health() -> None:
+    """Raise if this service cannot reach its own DynamoDB table."""
+    table.meta.client.describe_table(TableName=config.INVENTORY_TABLE)
+
+
 def get_stock(product_id: str):
     """Fetch the stock record for a product. Returns None if it doesn't exist."""
     response = table.get_item(Key={"product_id": product_id})

@@ -37,6 +37,7 @@ from decimal import Decimal
 
 from app import clients, repository, states
 from app.clients import DownstreamRejected, DownstreamUnknown
+from app.correlation import current_correlation_id
 from app.models import Order, OrderCreate, OrderLineItem
 
 logger = logging.getLogger(__name__)
@@ -113,13 +114,31 @@ def _price_basket(request: OrderCreate):
 # ---------------------------------------------------------------------------
 
 
-def _reject(order_id: str, customer_id: str, reason: str):
+def _line_items_for_event(line_items: list[OrderLineItem]):
+    """
+    The shape every terminal event's "items" field uses — enough for a
+    downstream consumer (Notification) to render a real receipt line by
+    line without calling back to the Product Catalogue for a name or price
+    that might have changed since. Order and Notification agree on this
+    shape implicitly, through the event contract, not through a shared
+    import — the two services do not know about each other's code.
+    """
+    return [
+        {"product_id": i.product_id, "quantity": i.quantity, "unit_price": str(i.unit_price), "name": i.name}
+        for i in line_items
+    ]
+
+
+def _reject(order_id: str, customer_id: str, contact_email: str, recipient_name: str, line_items, reason: str):
     """
     Out of stock. Nothing was taken, so there is nothing to compensate —
     the reserve transaction is all-or-nothing, so a failure leaves every
     product in the basket exactly as it was.
     """
-    logger.info("order rejected order_id=%s reason=%s", order_id, reason)
+    logger.info(
+        "order rejected order_id=%s reason=%s correlation_id=%s",
+        order_id, reason, current_correlation_id(),
+    )
     return repository.set_status_and_publish(
         order_id,
         states.RESERVING_STOCK,
@@ -128,14 +147,17 @@ def _reject(order_id: str, customer_id: str, reason: str):
         event_data={
             "order_id": order_id,
             "customer_id": customer_id,
+            "contact_email": contact_email,
+            "recipient_name": recipient_name,
             "status": states.REJECTED,
             "reason": reason,
+            "items": _line_items_for_event(line_items),
         },
         failure_reason=reason,
     )
 
 
-def _compensate_release(order_id, customer_id, line_items, reason, payment_id):
+def _compensate_release(order_id, customer_id, contact_email, recipient_name, line_items, reason, payment_id):
     """
     The card was declined. Undo the reservation and fail the order.
 
@@ -154,7 +176,8 @@ def _compensate_release(order_id, customer_id, line_items, reason, payment_id):
         # charge, but stock is stranded in `reserved` where nobody can buy
         # it. Surface it loudly rather than absorbing it (ADR-035).
         logger.error(
-            "compensation failed order_id=%s action=release error=%s", order_id, exc
+            "compensation failed order_id=%s action=release error=%s correlation_id=%s",
+            order_id, exc, current_correlation_id(),
         )
         return repository.set_status(
             order_id,
@@ -164,7 +187,10 @@ def _compensate_release(order_id, customer_id, line_items, reason, payment_id):
             payment_id=payment_id,
         )
 
-    logger.info("order failed order_id=%s reason=%s (stock released)", order_id, reason)
+    logger.info(
+        "order failed order_id=%s reason=%s (stock released) correlation_id=%s",
+        order_id, reason, current_correlation_id(),
+    )
     return repository.set_status_and_publish(
         order_id,
         states.TAKING_PAYMENT,
@@ -173,15 +199,18 @@ def _compensate_release(order_id, customer_id, line_items, reason, payment_id):
         event_data={
             "order_id": order_id,
             "customer_id": customer_id,
+            "contact_email": contact_email,
+            "recipient_name": recipient_name,
             "status": states.FAILED,
             "reason": reason,
+            "items": _line_items_for_event(line_items),
         },
         failure_reason=reason,
         payment_id=payment_id,
     )
 
 
-def _compensate_refund(order_id, customer_id, payment_id, reason):
+def _compensate_refund(order_id, customer_id, contact_email, recipient_name, line_items, payment_id, reason):
     """
     Payment succeeded but the stock could not be confirmed. Refund.
 
@@ -196,8 +225,8 @@ def _compensate_refund(order_id, customer_id, payment_id, reason):
         # and will not receive goods. Terminal, alarmed, and resolved by a
         # human (ADR-035).
         logger.error(
-            "compensation failed order_id=%s action=refund payment_id=%s error=%s",
-            order_id, payment_id, exc,
+            "compensation failed order_id=%s action=refund payment_id=%s error=%s correlation_id=%s",
+            order_id, payment_id, exc, current_correlation_id(),
         )
         return repository.set_status(
             order_id,
@@ -207,7 +236,10 @@ def _compensate_refund(order_id, customer_id, payment_id, reason):
             payment_id=payment_id,
         )
 
-    logger.info("order failed order_id=%s reason=%s (payment refunded)", order_id, reason)
+    logger.info(
+        "order failed order_id=%s reason=%s (payment refunded) correlation_id=%s",
+        order_id, reason, current_correlation_id(),
+    )
     return repository.set_status_and_publish(
         order_id,
         states.CONFIRMING_STOCK,
@@ -216,15 +248,18 @@ def _compensate_refund(order_id, customer_id, payment_id, reason):
         event_data={
             "order_id": order_id,
             "customer_id": customer_id,
+            "contact_email": contact_email,
+            "recipient_name": recipient_name,
             "status": states.FAILED,
             "reason": reason,
+            "items": _line_items_for_event(line_items),
         },
         failure_reason=reason,
         payment_id=payment_id,
     )
 
 
-def _confirm_cash_on_delivery(order_id: str, customer_id: str, line_items, total: Decimal):
+def _confirm_cash_on_delivery(order_id: str, customer_id: str, contact_email: str, recipient_name: str, line_items, total: Decimal):
     """
     No payment step for cash on delivery: confirm the reservation directly
     and close the order out awaiting payment at the door.
@@ -244,8 +279,8 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, line_items, total
     except DownstreamRejected as exc:
         reason = str(exc.detail)
         logger.info(
-            "order failed order_id=%s reason=%s (cash on delivery, nothing charged)",
-            order_id, reason,
+            "order failed order_id=%s reason=%s (cash on delivery, nothing charged) correlation_id=%s",
+            order_id, reason, current_correlation_id(),
         )
         return repository.set_status_and_publish(
             order_id,
@@ -255,15 +290,21 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, line_items, total
             event_data={
                 "order_id": order_id,
                 "customer_id": customer_id,
+                "contact_email": contact_email,
+                "recipient_name": recipient_name,
                 "status": states.FAILED,
                 "reason": reason,
+                "items": _line_items_for_event(line_items),
             },
             failure_reason=reason,
         )
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.CONFIRMING_STOCK, str(exc))
 
-    logger.info("order confirmed (cash on delivery) order_id=%s", order_id)
+    logger.info(
+        "order confirmed (cash on delivery) order_id=%s correlation_id=%s",
+        order_id, current_correlation_id(),
+    )
     return repository.set_status_and_publish(
         order_id,
         states.CONFIRMING_STOCK,
@@ -272,11 +313,11 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, line_items, total
         event_data={
             "order_id": order_id,
             "customer_id": customer_id,
+            "contact_email": contact_email,
+            "recipient_name": recipient_name,
             "total": str(total),
             "status": states.PENDING_ON_DELIVERY,
-            "items": [
-                {"product_id": i.product_id, "quantity": i.quantity} for i in line_items
-            ],
+            "items": _line_items_for_event(line_items),
         },
     )
 
@@ -296,7 +337,10 @@ def _payment_unknown(order_id: str, reason: str):
     against the PSP. No event is published — nothing downstream should act
     on an order whose outcome is genuinely undetermined.
     """
-    logger.error("payment outcome unknown order_id=%s reason=%s", order_id, reason)
+    logger.error(
+        "payment outcome unknown order_id=%s reason=%s correlation_id=%s",
+        order_id, reason, current_correlation_id(),
+    )
     return repository.set_status(
         order_id,
         states.TAKING_PAYMENT,
@@ -324,7 +368,8 @@ def _stock_unknown(order_id, from_state, reason, payment_id=None):
     reintroduces overselling.
     """
     logger.error(
-        "stock outcome unknown order_id=%s from=%s reason=%s", order_id, from_state, reason
+        "stock outcome unknown order_id=%s from=%s reason=%s correlation_id=%s",
+        order_id, from_state, reason, current_correlation_id(),
     )
     return repository.set_status(
         order_id,
@@ -379,7 +424,7 @@ def run_checkout(request: OrderCreate):
     except DownstreamRejected as exc:
         # 409 — at least one line is short. The transaction guarantees
         # nothing at all was reserved, so there is nothing to undo.
-        return _reject(order_id, customer_id, str(exc.detail))
+        return _reject(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, line_items, str(exc.detail))
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.RESERVING_STOCK, str(exc))
 
@@ -388,7 +433,7 @@ def run_checkout(request: OrderCreate):
     # step both payment methods share, keeps the two paths from silently
     # drifting apart on how they reserve stock.
     if request.payment_method == "cash_on_delivery":
-        return _confirm_cash_on_delivery(order_id, customer_id, line_items, total)
+        return _confirm_cash_on_delivery(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, line_items, total)
 
     # --- Step 2: take payment -------------------------------------------
     repository.set_status(order_id, states.RESERVING_STOCK, states.TAKING_PAYMENT)
@@ -405,7 +450,8 @@ def run_checkout(request: OrderCreate):
         declined_payment_id = (exc.body or {}).get("payment_id")
         declined_reason = (exc.body or {}).get("failure_reason") or str(exc.detail)
         return _compensate_release(
-            order_id, customer_id, line_items, declined_reason, declined_payment_id
+            order_id, customer_id, order.contact_email, order.shipping_address.recipient_name,
+            line_items, declined_reason, declined_payment_id
         )
     except DownstreamUnknown as exc:
         return _payment_unknown(order_id, str(exc))
@@ -419,12 +465,15 @@ def run_checkout(request: OrderCreate):
     try:
         clients.confirm_stock(line_items)
     except DownstreamRejected as exc:
-        return _compensate_refund(order_id, customer_id, payment_id, str(exc.detail))
+        return _compensate_refund(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, line_items, payment_id, str(exc.detail))
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.CONFIRMING_STOCK, str(exc), payment_id)
 
     # --- Done ------------------------------------------------------------
-    logger.info("order confirmed order_id=%s payment_id=%s", order_id, payment_id)
+    logger.info(
+        "order confirmed order_id=%s payment_id=%s correlation_id=%s",
+        order_id, payment_id, current_correlation_id(),
+    )
     return repository.set_status_and_publish(
         order_id,
         states.CONFIRMING_STOCK,
@@ -433,10 +482,10 @@ def run_checkout(request: OrderCreate):
         event_data={
             "order_id": order_id,
             "customer_id": customer_id,
+            "contact_email": order.contact_email,
+            "recipient_name": order.shipping_address.recipient_name,
             "total": str(total),
-            "items": [
-                {"product_id": i.product_id, "quantity": i.quantity} for i in line_items
-            ],
+            "items": _line_items_for_event(line_items),
         },
         payment_id=payment_id,
     )

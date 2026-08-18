@@ -40,6 +40,7 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
 from app import config
+from app.correlation import CORRELATION_HEADER, current_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,15 @@ def _signed_request(request: httpx.Request) -> httpx.Response:
 
 
 def _request(method: str, url: str, **kwargs):
+    # The ContextVar is scoped to one incoming request, so this header cannot
+    # leak between concurrent customers or Lambda invocations.
+    correlation_id = current_correlation_id()
+    headers = dict(kwargs.pop("headers", {}))
+    if correlation_id:
+        headers[CORRELATION_HEADER] = correlation_id
+    if headers:
+        kwargs["headers"] = headers
+
     try:
         request = httpx.Request(method, url, **kwargs)
         if config.SIGN_DOWNSTREAM_REQUESTS:
@@ -115,13 +125,19 @@ def _request(method: str, url: str, **kwargs):
     except httpx.RequestError as exc:
         # Covers timeouts, DNS failures, refused and dropped connections.
         # We never saw a status line, so we know nothing about the outcome.
-        logger.warning("downstream unreachable url=%s error=%s", url, exc)
+        logger.warning(
+            "downstream unreachable correlation_id=%s url=%s error=%s",
+            correlation_id, url, exc,
+        )
         raise DownstreamUnknown(f"no response from {url}: {exc}") from exc
 
     if response.status_code >= 500:
         # The service accepted the request and then broke. Whether it
         # completed the work first is exactly what we cannot determine.
-        logger.warning("downstream 5xx url=%s status=%s", url, response.status_code)
+        logger.warning(
+            "downstream 5xx correlation_id=%s url=%s status=%s",
+            correlation_id, url, response.status_code,
+        )
         raise DownstreamUnknown(f"{url} returned {response.status_code}")
 
     if response.status_code >= 400:

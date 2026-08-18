@@ -1,16 +1,21 @@
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+from botocore.exceptions import BotoCoreError, ClientError
 from mangum import Mangum
 from app.models import PaymentRequest, Payment
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
 from app.auth import require_admin
+from app.correlation import correlation_id_from_request, correlation_middleware
 import logging
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="SmartRetailX - Payment Service",
     version="1.0.0",
@@ -23,13 +28,25 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Correlation-ID"],
 )
+
+app.middleware("http")(correlation_middleware)
 
 
 @app.get("/health")
-def health():
-    """Health check endpoint."""
-    return {"status": "ok"}
+def health(request: Request):
+    """Report healthy only when the payments table is reachable."""
+    try:
+        repository.check_health()
+    except (BotoCoreError, ClientError) as exc:
+        logger.error(
+            "health_check_failed correlation_id=%s error=%s",
+            correlation_id_from_request(request),
+            exc,
+        )
+        return JSONResponse(status_code=503, content={"status": "unhealthy"})
+    return {"status": "healthy"}
 
 
 @app.post("/api/v1/payments", response_model=Payment)

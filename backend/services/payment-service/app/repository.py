@@ -44,6 +44,11 @@ dynamodb = boto3.resource("dynamodb", **_dynamodb_kwargs)
 table = dynamodb.Table(config.PAYMENTS_TABLE)
 
 
+def check_health() -> None:
+    """Raise if this service cannot reach its own DynamoDB table."""
+    table.meta.client.describe_table(TableName=config.PAYMENTS_TABLE)
+
+
 def charge(order_id: str, amount: Decimal, payment_token: str) -> Payment:
     """
     Charge a payment through the configured provider and record the

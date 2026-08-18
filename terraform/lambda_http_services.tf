@@ -136,7 +136,8 @@ resource "aws_iam_role_policy" "product_api" {
       local.vpc_access_statement,
       {
         # Scan is required by the paginated listing; BatchGetItem by the
-        # batch price lookup the Order saga calls. No DeleteItem: products
+        # batch price lookup the Order saga calls; DescribeTable by the
+        # database-backed health endpoint. No DeleteItem: products
         # are soft-deleted via an active flag (ADR-037), so the API has no
         # code path that deletes and the role grants no permission to.
         #
@@ -152,6 +153,7 @@ resource "aws_iam_role_policy" "product_api" {
         # allowed.
         Effect = "Allow"
         Action = [
+          "dynamodb:DescribeTable",
           "dynamodb:GetItem",
           "dynamodb:BatchGetItem",
           "dynamodb:PutItem",
@@ -203,6 +205,7 @@ resource "aws_iam_role_policy" "inventory_api" {
         # UpdateItem grant), added anyway as explicit, harmless intent.
         Effect = "Allow"
         Action = [
+          "dynamodb:DescribeTable",
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
@@ -235,6 +238,7 @@ resource "aws_iam_role_policy" "payment_api" {
         # in the service enumerates or removes them, so nothing is granted.
         Effect = "Allow"
         Action = [
+          "dynamodb:DescribeTable",
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
@@ -288,6 +292,7 @@ resource "aws_iam_role_policy" "order_api" {
         # explicit, harmless intent.
         Effect = "Allow"
         Action = [
+          "dynamodb:DescribeTable",
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",

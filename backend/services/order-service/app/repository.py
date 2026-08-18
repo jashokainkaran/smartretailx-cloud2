@@ -41,6 +41,11 @@ dynamodb_client = boto3.client("dynamodb", **_dynamodb_kwargs)
 _serializer = TypeSerializer()
 
 
+def check_health() -> None:
+    """Raise if this service cannot reach its own DynamoDB table."""
+    dynamodb_client.describe_table(TableName=config.ORDERS_TABLE)
+
+
 def _to_dynamo(item: dict) -> dict:
     """Convert a plain Python dict into DynamoDB's wire format."""
     return {k: _serializer.serialize(v) for k, v in item.items()}

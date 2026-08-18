@@ -1,12 +1,18 @@
-from fastapi import Depends, FastAPI, HTTPException
+import logging
+
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from mangum import Mangum
 from app.models import InventoryItem
 from app import repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
 from app.auth import require_admin
+from app.correlation import correlation_id_from_request, correlation_middleware
 from app.models import StockOperation
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SmartRetailX - Inventory Service",
@@ -20,13 +26,25 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Correlation-ID"],
 )
+
+app.middleware("http")(correlation_middleware)
 
 
 @app.get("/health")
-def health():
-    """Health check endpoint."""
-    return {"status": "ok"}
+def health(request: Request):
+    """Report healthy only when the inventory table is reachable."""
+    try:
+        repository.check_health()
+    except (BotoCoreError, ClientError) as exc:
+        logger.error(
+            "health_check_failed correlation_id=%s error=%s",
+            correlation_id_from_request(request),
+            exc,
+        )
+        return JSONResponse(status_code=503, content={"status": "unhealthy"})
+    return {"status": "healthy"}
 
 
 @app.get("/api/v1/inventory/{product_id}", response_model=InventoryItem)
