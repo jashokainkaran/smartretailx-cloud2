@@ -210,8 +210,18 @@ resource "aws_iam_role_policy" "inventory_api" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:TransactWriteItems",
+          "dynamodb:Scan", # low-stock admin endpoint — see IMPLEMENTATION_RECORD.md
         ]
         Resource = aws_dynamodb_table.inventory.arn
+      },
+      {
+        # Best-effort, direct publish after a successful stock mutation —
+        # not a transactional outbox (see websocket.tf). A lost event means
+        # one product's live count doesn't tick for a moment; nothing else
+        # depends on this arriving.
+        Effect   = "Allow"
+        Action   = "events:PutEvents"
+        Resource = aws_cloudwatch_event_bus.main.arn
       },
     ]
   })
@@ -317,6 +327,17 @@ resource "aws_iam_role_policy" "order_api" {
         ]
         Resource = aws_dynamodb_table.order_outbox.arn
       },
+      {
+        # Best-effort, direct publish of OrderPlaced right after the initial
+        # order record is created — separate from the order_outbox
+        # transaction above, which is reserved for the saga's terminal
+        # events (OrderConfirmed/OrderFailed), where a lost event would be a
+        # real problem. A lost OrderPlaced just means the admin dashboard's
+        # live feed misses one toast; the order itself is still correct.
+        Effect   = "Allow"
+        Action   = "events:PutEvents"
+        Resource = aws_cloudwatch_event_bus.main.arn
+      },
     ]
   })
 }
@@ -351,6 +372,11 @@ locals {
       environment = {
         INVENTORY_TABLE = aws_dynamodb_table.inventory.name
         CORS_ORIGINS    = var.frontend_origin
+
+        # CP-020's best-effort StockLevelChanged publish. Without this,
+        # events.publish_stock_changed() has nothing to publish to and
+        # silently no-ops — the same gap fixed on order-api above.
+        EVENT_BUS_NAME = aws_cloudwatch_event_bus.main.name
       }
     }
 
@@ -414,6 +440,13 @@ locals {
         # so the value is a real correctness parameter, not a default.
         DOWNSTREAM_TIMEOUT_SECONDS = "8"
         SIGN_DOWNSTREAM_REQUESTS   = "true"
+
+        # CP-020's best-effort OrderNeedsReconciliation publish. Without
+        # this, events.publish_needs_reconciliation() has nothing to
+        # publish to and silently no-ops on its own "if not
+        # config.EVENT_BUS_NAME: return" guard — a real gap this project
+        # shipped with initially and caught on later review.
+        EVENT_BUS_NAME = aws_cloudwatch_event_bus.main.name
       }
     }
   }

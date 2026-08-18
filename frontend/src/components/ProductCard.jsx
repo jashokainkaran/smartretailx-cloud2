@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ProductImage from "./ProductImage.jsx";
 import { formatPrice } from "../lib/currency.js";
 import { fetchStock } from "../api/inventory.js";
+import { useWebSocketMessage } from "../realtime/WebSocketProvider.jsx";
 
 export default function ProductCard({ product, onSelect, onAddToCart, idToken }) {
   const [outOfStock, setOutOfStock] = useState(false);
@@ -21,6 +22,15 @@ export default function ProductCard({ product, onSelect, onAddToCart, idToken })
       });
     return () => { cancelled = true; };
   }, [product.id, idToken]);
+
+  // A live top-up on the fetch above, not a replacement for it — the
+  // WebSocket only reports CHANGES from the moment it connects, never the
+  // level that was already true beforehand.
+  const handleStockUpdate = useCallback((message) => {
+    if (message.product_id !== product.id) return;
+    setOutOfStock(message.available <= 0);
+  }, [product.id]);
+  useWebSocketMessage("StockUpdated", handleStockUpdate);
 
   function handleAddToCart(event) {
     // Stops this reaching the card's own onClick below — without it, adding

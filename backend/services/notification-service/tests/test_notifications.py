@@ -202,6 +202,44 @@ def test_send_receipt_rejects_an_unknown_event_type():
         send_receipt("SomethingElse", {"contact_email": "customer@example.com"})
 
 
+def test_send_receipt_delivery_status_changed_mentions_the_status(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.emailer.ses.send_email", lambda **kwargs: calls.append(kwargs)
+    )
+
+    send_receipt("DeliveryStatusChanged", {
+        "order_id": "order-4",
+        "contact_email": "customer@example.com",
+        "recipient_name": "Priya",
+        "delivery_status": "OUT_FOR_DELIVERY",
+    })
+
+    text = calls[0]["Message"]["Body"]["Text"]["Data"]
+    html_body = calls[0]["Message"]["Body"]["Html"]["Data"]
+    assert "out for delivery" in text.lower()
+    assert "out for delivery" in html_body.lower()
+    assert "Hi Priya" in text
+    assert "order-4" in text
+
+
+def test_send_receipt_delivery_status_changed_handles_an_unmapped_status(monkeypatch):
+    """A status this service doesn't have a friendly phrase for still sends
+    something sensible rather than crashing — falls back to the raw value."""
+    calls = []
+    monkeypatch.setattr(
+        "app.emailer.ses.send_email", lambda **kwargs: calls.append(kwargs)
+    )
+
+    send_receipt("DeliveryStatusChanged", {
+        "order_id": "order-5",
+        "contact_email": "customer@example.com",
+        "delivery_status": "SOMETHING_NEW",
+    })
+
+    assert "SOMETHING_NEW" in calls[0]["Message"]["Body"]["Text"]["Data"]
+
+
 # ---------------------------------------------------------------------------
 # handler: the full SQS-triggered path
 # ---------------------------------------------------------------------------

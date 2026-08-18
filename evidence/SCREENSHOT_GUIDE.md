@@ -112,9 +112,9 @@ All in the **AWS Console**, region **eu-west-1**.
   capture both settings in one crop (may need two shots stitched, or just
   make sure throttle limits and the access-log toggle are both visible).
 - **#15** `lambda/01-function-list.png` — Lambda → **Functions**, type
-  `smartretailx` into the filter box. Should show all 8: the four HTTP APIs,
+  `smartretailx` into the filter box. Should show all 9: the four HTTP APIs,
   `outbox-relay`, `order-outbox-relay`, `inventory-consumer`,
-  `cognito-post-confirmation`.
+  `cognito-post-confirmation`, and (as of tonight) `notification-service`.
 - **#16** `lambda/02-order-api-config.png` — click into
   `smartretailx-dev-order-api` → **Configuration** tab → **Environment
   variables**. Confirm table names/service URLs are visible and there is
@@ -269,7 +269,60 @@ so everything reflects the same fresh traffic rather than old test rows.
 
 ---
 
-## 8. Bonus — today's RBAC bug hunt (not in the original log, worth adding)
+## 8. Notification service and today's fixes (items 45–54)
+
+Do the live-order steps (2–4 below) **before** the CloudWatch/DynamoDB shots (5–7), so
+they're capturing the same real traffic rather than old data — same rule as §5.
+
+1. **#45** `tests/06-pytest-order-service-with-correlation-id.png` — in
+   `order-service/`: `./venv/Scripts/python.exe -m pytest -v`. Scroll so both
+   `test_published_event_carries_enough_to_send_a_receipt_with_no_callback`
+   and `test_rejected_order_event_also_carries_contact_email_and_items` are
+   visible, plus the `59 passed` summary line.
+2. **#46** `tests/07-pytest-notification-service.png` — in
+   `notification-service/`: same command. `14 passed`.
+3. **#47** `terraform/05-plan-six-fixes.png` — from `terraform/`:
+   `terraform plan -var-file=dev.tfvars`. If you've already applied, this will
+   show `0 to add, 0 to change, 0 to destroy` — that's still valid evidence
+   (deployed state matches code); note it as such rather than needing a fresh
+   diff.
+4. **Place one real order** on the deployed site
+   (`https://d1vxg10hlsklfv.cloudfront.net`), signed in as the customer
+   account, using `jashok5766+smartretailx@gmail.com` as the contact email so
+   the receipt actually lands somewhere you can screenshot. A normal card
+   payment (`CONFIRMED`) is the cleanest case.
+5. **#48** `lambda/03-notification-service-no-vpc.png` — Lambda →
+   `smartretailx-dev-notification-service` → **Configuration** tab → **VPC**
+   (left sidebar). Should show no VPC configured at all — worth a second crop
+   of `smartretailx-dev-inventory-consumer`'s own VPC tab alongside it for
+   contrast (one in, one out, both deliberate).
+6. **#49** `iam/03-notification-service-policy-json.png` — same function →
+   **Configuration** → **Permissions** → execution role link → inline policy
+   → **{} JSON**. Capture the DynamoDB statement showing both `GetItem` and
+   `PutItem`, and the SES statement scoped to one identity ARN, not `"*"`.
+7. **#50** `sqs/01-notifications-trigger-partial-batch.png` — same function →
+   **Configuration** → **Triggers** → click the SQS trigger → confirm
+   **"Report batch item failures"** is checked.
+8. **#51** `ses/01-identity-verified.png` — SES console → **Identities** →
+   `jashok5766+smartretailx@gmail.com` → status column reading **Verified**.
+9. **#52** `dynamodb/06-notifications-table-item.png` — DynamoDB →
+   `smartretailx-dev-notifications` → **Explore table items** → the
+   `event_id` from the order you just placed in step 4.
+10. **#53** `observability/06-notification-log-correlation-id.png` —
+    CloudWatch → Log groups → `/aws/lambda/smartretailx-dev-notification-service`
+    → the log stream covering step 4's timestamp. Find the
+    `Sent OrderConfirmed receipt ... correlation_id=...` line. For the
+    strongest version of this shot, also pull up
+    `/aws/lambda/smartretailx-dev-order-api`'s log for the same order and
+    confirm the **same `correlation_id` value** appears in both — that pairing
+    is the actual proof the ID traces one request across two services, not
+    just that each service logs *something*.
+11. **#54** `saga/06-receipt-email-inbox.png` — your Gmail inbox, the receipt
+    email from step 4, subject and body both visible in frame.
+
+---
+
+## 9. Bonus — today's RBAC bug hunt (not in the original log, worth adding)
 
 This is genuinely strong "engineering process" evidence for the report: a
 real production bug found through live log correlation, root-caused, fixed
@@ -288,3 +341,62 @@ across four services, and verified — not discovered by code review.
   showing `test_auth.py`'s four new tests passing (the bracketed-claim
   regression tests) — pick order-service or inventory-service, whichever
   gives the cleanest crop alongside the rest of that service's suite.
+
+---
+
+## 10. WebSocket real-time push (items 55–64)
+
+CP-020's backend was built, tested, and **deployed live 2026-08-18** — all
+three Lambdas confirmed `Active`, `order-api`/`inventory-api` confirmed
+running their updated images. Frontend wiring (the stock ticker, admin toast,
+dashboard) followed the same night. Do the live-traffic steps (4 onward) in
+one sitting, same rule as §5 and §8.
+
+1. **#55** `tests/08-pytest-websocket-service.png` — in `websocket-service/`:
+   `./venv/Scripts/python.exe -m pytest -v`. `19 passed`, with the
+   `test_verify_token_*` names visible.
+2. **#56** `tests/09-pytest-order-service-reconciliation.png` — in
+   `order-service/`, same command. `68 passed` — scroll so
+   `test_compensation_failure_publishes_needs_reconciliation`,
+   `test_stock_outcome_unknown_publishes_needs_reconciliation`, and
+   `test_payment_outcome_unknown_publishes_needs_reconciliation` are all in
+   frame together — that trio is the actual proof all three "needs a human"
+   states are covered, not just one.
+3. **#57** `terraform/06-plan-websocket-infra.png` — from `terraform/`:
+   `terraform plan -var-file=dev.tfvars`. The original infrastructure is
+   already applied, but the `EVENT_BUS_NAME` fix (a real gap found on later
+   review — it was missing from both `order-api`/`inventory-api`, so
+   `StockLevelChanged`/`OrderNeedsReconciliation` were silently never
+   publishing) is not yet redeployed as of this note — that plan, showing
+   the two environment-variable additions, is itself still-genuine
+   before/after evidence. Capture whichever plan is actually pending when
+   you get to this step.
+4. **#58** `api-gateway/03-websocket-routes.png` — API Gateway console →
+   the WebSocket API (`smartretailx-dev-websocket`) → **Routes**. Both
+   `$connect` and `$disconnect` visible with their integration target.
+5. **#59** `lambda/04-websocket-functions.png` — Lambda → **Functions**,
+   filter `websocket`. All three should appear.
+6. **Open the deployed frontend, sign in as a customer, and stay on a
+   product page** — this is what actually opens a WebSocket connection.
+7. **#60** `dynamodb/07-websocket-connections-table.png` — DynamoDB →
+   `smartretailx-dev-websocket-connections` → **Explore table items** — your
+   own connection row, `role: customer`.
+8. **#61** `events/03-order-rules-two-targets.png` — EventBridge → **Rules**
+   → `smartretailx-dev-order-confirmed` (or `-order-failed`) → **Targets**
+   tab. Should show two: the Notification queue and the WebSocket push
+   queue — the point of this shot is that one event now fans out to both.
+9. **#62** `events/04-needs-reconciliation-rule.png` — same **Rules** list →
+   `smartretailx-dev-order-needs-reconciliation` → its one target.
+10. **#63** `saga/07-live-stock-ticker.png` — with the product page still
+    open from step 6, open browser DevTools → **Network** tab → filter
+    **WS** → click the open connection → **Messages**. In a second
+    tab/window, place an order for that same product (or use the admin
+    panel's stock-adjust endpoint) to trigger a reservation, then capture
+    the `StockUpdated` frame arriving in the first tab's Messages view.
+11. **#64** `saga/08-admin-order-toast.png` — sign in as **admin** in
+    another tab, stay on the dashboard, then place a real order as a
+    customer in yet another tab/window. Capture the toast the instant it
+    appears — order ID, outcome, and payment method all legible. For the
+    strongest version of this shot, also place one that gets declined
+    (`tok_test_decline`) so you have both a success and a failure toast to
+    choose from.

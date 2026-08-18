@@ -105,6 +105,20 @@ resource "aws_cloudwatch_event_rule" "order_failed" {
   })
 }
 
+# The third notification-worthy event type the comment above anticipated —
+# published best-effort, not through the order_outbox transaction (see
+# events.py's own docstring for why that's the right call here).
+resource "aws_cloudwatch_event_rule" "delivery_status_changed" {
+  name           = "${local.prefix}-delivery-status-changed"
+  description    = "Route DeliveryStatusChanged events to the Notification queue"
+  event_bus_name = aws_cloudwatch_event_bus.main.name
+
+  event_pattern = jsonencode({
+    source      = ["smartretailx.orders"]
+    detail-type = ["DeliveryStatusChanged"]
+  })
+}
+
 resource "aws_cloudwatch_event_target" "order_confirmed_to_notifications" {
   rule           = aws_cloudwatch_event_rule.order_confirmed.name
   event_bus_name = aws_cloudwatch_event_bus.main.name
@@ -113,6 +127,12 @@ resource "aws_cloudwatch_event_target" "order_confirmed_to_notifications" {
 
 resource "aws_cloudwatch_event_target" "order_failed_to_notifications" {
   rule           = aws_cloudwatch_event_rule.order_failed.name
+  event_bus_name = aws_cloudwatch_event_bus.main.name
+  arn            = aws_sqs_queue.notifications.arn
+}
+
+resource "aws_cloudwatch_event_target" "delivery_status_changed_to_notifications" {
+  rule           = aws_cloudwatch_event_rule.delivery_status_changed.name
   event_bus_name = aws_cloudwatch_event_bus.main.name
   arn            = aws_sqs_queue.notifications.arn
 }
@@ -150,6 +170,18 @@ resource "aws_sqs_queue_policy" "notifications" {
         Condition = {
           ArnEquals = {
             "aws:SourceArn" = aws_cloudwatch_event_rule.order_failed.arn
+          }
+        }
+      },
+      {
+        Sid       = "AllowDeliveryStatusChanged"
+        Effect    = "Allow"
+        Principal = { Service = "events.amazonaws.com" }
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.notifications.arn
+        Condition = {
+          ArnEquals = {
+            "aws:SourceArn" = aws_cloudwatch_event_rule.delivery_status_changed.arn
           }
         }
       },

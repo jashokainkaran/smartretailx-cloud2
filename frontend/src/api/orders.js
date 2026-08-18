@@ -44,3 +44,9 @@ export function updateDeliveryStatus(orderId, deliveryStatus, idToken) {
     body: { delivery_status: deliveryStatus },
   });
 }
+
+// Today's orders, aggregated server-side — the admin dashboard's analytics
+// panel. Not paginated, since it returns one summary object, not a list.
+export function fetchOrderSummary(idToken) {
+  return request("/api/v1/orders/admin/summary", { idToken });
+}

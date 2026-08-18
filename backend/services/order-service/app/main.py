@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+from datetime import datetime, timezone
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -8,11 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from mangum import Mangum
 
-from app import config, repository, saga
+from app import config, events, repository, saga
 from app.auth import claims_from_request, groups, require_admin, require_customer
 from app.clients import DownstreamUnknown
 from app.correlation import correlation_id_from_request, correlation_middleware
-from app.models import DeliveryStatusUpdate, Order, OrderCreate, OrderPage
+from app.models import DeliveryStatusUpdate, Order, OrderCreate, OrderPage, OrderSummary
 from app.saga import BasketInvalid
 
 logging.basicConfig(
@@ -126,9 +127,9 @@ def list_all_orders_admin(
     everyone's orders" option, for the data-protection reason its own
     docstring gives. This is that capability, made safe the same way
     /orders/stuck is: gated to admin only, not exposed on the general
-    endpoint. repository.list_all_orders() is a Scan (see its own docstring
-    for why there is no GSI that avoids one) — fine at this project's data
-    volume, a genuine scaling limitation at real volume.
+    endpoint. repository.list_all_orders() queries all-orders-index (a
+    constant partition key set on every order at write time), not a Scan —
+    see its own docstring for the full reasoning.
     """
     start_key = None
     if cursor:
@@ -144,6 +145,21 @@ def list_all_orders_admin(
         next_cursor = base64.urlsafe_b64encode(json.dumps(last_key).encode()).decode()
 
     return {"items": items, "next_cursor": next_cursor}
+
+
+@app.get("/api/v1/orders/admin/summary", response_model=OrderSummary)
+def order_summary(_claims: dict = Depends(require_admin)):
+    """Today's orders, aggregated — the admin dashboard's analytics panel.
+
+    "Today" is computed here (UTC midnight to now), not accepted as a
+    client-supplied date range: this endpoint answers one specific
+    question the dashboard asks, not a general reporting API. Registered
+    ahead of GET /orders/{order_id} in file order for readability, though
+    it wouldn't collide either way — "admin/summary" is a different path
+    segment count, not a value that could be mistaken for an order_id.
+    """
+    since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    return repository.summarize_orders_since(since)
 
 
 @app.get("/api/v1/orders/{order_id}", response_model=Order)
@@ -178,9 +194,11 @@ def update_delivery_status(
     if repository.get_order(order_id) is None:
         raise HTTPException(status_code=404, detail="Order not found")
     try:
-        return repository.set_delivery_status(order_id, body.delivery_status)
+        order = repository.set_delivery_status(order_id, body.delivery_status)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    events.publish_delivery_status_changed(order)
+    return order
 
 
 @app.get("/api/v1/orders", response_model=OrderPage)

@@ -335,6 +335,50 @@ def list_all_orders(limit: int = 20, cursor: dict | None = None):
     return response.get("Items", []), response.get("LastEvaluatedKey")
 
 
+def summarize_orders_since(since_iso: str) -> dict:
+    """Aggregate every order from `since_iso` onward — the admin dashboard's
+    analytics panel. Same all-orders-index Query list_all_orders() uses,
+    with a range condition on created_at (the index's own sort key) added,
+    so this is bounded to the orders actually being summarized rather than
+    the whole table — not a Scan, and not "every order ever" fetched just
+    to filter client-side."""
+    total_orders = 0
+    total_revenue = Decimal("0")
+    by_status: dict[str, int] = {}
+    by_payment_method: dict[str, int] = {}
+
+    kwargs = {
+        "IndexName": "all-orders-index",
+        "KeyConditionExpression": Key("order_bucket").eq("ALL") & Key("created_at").gte(since_iso),
+    }
+    while True:
+        response = table.query(**kwargs)
+        for item in response.get("Items", []):
+            total_orders += 1
+            status = item.get("status", "UNKNOWN")
+            by_status[status] = by_status.get(status, 0) + 1
+            payment_method = item.get("payment_method")
+            if payment_method:
+                by_payment_method[payment_method] = by_payment_method.get(payment_method, 0) + 1
+            # Only orders that actually represent revenue — a REJECTED or
+            # FAILED order never took money, and counting its total here
+            # would overstate what this platform actually earned.
+            if status in (states.CONFIRMED, states.PENDING_ON_DELIVERY):
+                total_revenue += Decimal(item.get("total", "0"))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        kwargs["ExclusiveStartKey"] = last_key
+
+    return {
+        "total_orders": total_orders,
+        "total_revenue": str(total_revenue),
+        "average_order_value": str(total_revenue / total_orders) if total_orders else "0",
+        "by_status": by_status,
+        "by_payment_method": by_payment_method,
+    }
+
+
 def set_delivery_status(order_id: str, delivery_status: str):
     """
     Record fulfilment progress. Guarded only by "the order must actually be

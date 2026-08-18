@@ -119,6 +119,39 @@ def _failure_email(data: dict) -> tuple[str, str, str]:
     return "Your SmartRetailX order could not be completed", html_body, text_body
 
 
+_DELIVERY_STATUS_MESSAGES = {
+    "PROCESSING": "is being processed",
+    "SHIPPED": "has shipped",
+    "OUT_FOR_DELIVERY": "is out for delivery",
+    "DELIVERED": "has been delivered",
+}
+
+
+def _delivery_status_email(data: dict) -> tuple[str, str, str]:
+    """(subject, html_body, text_body) for a DeliveryStatusChanged event.
+    Deliberately thin compared to the receipt/failure emails above — this
+    is a status ping, not something carrying items or a total; the
+    customer's own order history is the source of truth for the rest."""
+    greeting = _greeting(data.get("recipient_name"))
+    status = data["delivery_status"]
+    status_message = _DELIVERY_STATUS_MESSAGES.get(status, f"is now {status}")
+
+    body_html = (
+        f"<p>Your order {status_message}.</p>"
+        f"<p><strong>Order:</strong> {html.escape(data['order_id'])}</p>"
+    )
+    html_body = _wrap_html(greeting, body_html)
+
+    text_body = (
+        f"{greeting}\n\n"
+        f"Your order {status_message}.\n\n"
+        f"Order: {data['order_id']}\n\n"
+        "Thanks for shopping with SmartRetailX!\n"
+    )
+
+    return f"Your SmartRetailX order {status_message}", html_body, text_body
+
+
 def send_receipt(event_type: str, data: dict) -> None:
     """The only place this service calls SES. Raises on any failure —
     deliberately not swallowed, so a real send failure propagates back to
@@ -129,6 +162,8 @@ def send_receipt(event_type: str, data: dict) -> None:
         subject, html_body, text_body = _receipt_email(data)
     elif event_type == "OrderFailed":
         subject, html_body, text_body = _failure_email(data)
+    elif event_type == "DeliveryStatusChanged":
+        subject, html_body, text_body = _delivery_status_email(data)
     else:
         raise ValueError(f"Unrecognised event_type for a receipt: {event_type}")
 

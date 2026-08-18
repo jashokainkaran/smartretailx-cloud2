@@ -855,6 +855,50 @@ def test_delivery_status_rejects_an_unknown_value(calls):
     assert response.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# DeliveryStatusChanged publishing (CP-020's delivery-tracking follow-up) —
+# best-effort, feeds Notification's email extension, not a WebSocket push
+# (the customer is almost never present when this happens)
+# ---------------------------------------------------------------------------
+
+def test_delivery_status_change_publishes_an_event(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    published = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: published.append(kwargs) or {},
+    )
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    client.patch(f"/api/v1/orders/{order_id}/delivery-status", json={"delivery_status": "SHIPPED"})
+
+    assert len(published) == 1
+    entry = published[0]["Entries"][0]
+    assert entry["Source"] == "smartretailx.orders"
+    assert entry["DetailType"] == "DeliveryStatusChanged"
+    detail = json.loads(entry["Detail"])
+    assert "event_id" in detail  # Notification's idempotency check needs one
+    data = detail["data"]
+    assert data["order_id"] == order_id
+    assert data["delivery_status"] == "SHIPPED"
+    assert data["contact_email"] == "customer@example.com"
+    assert "correlation_id" in data
+
+
+def test_a_delivery_status_publish_failure_does_not_fail_the_response(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("EventBridge is unreachable")),
+    )
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    response = client.patch(f"/api/v1/orders/{order_id}/delivery-status", json={"delivery_status": "SHIPPED"})
+
+    assert response.status_code == 200
+    assert response.json()["delivery_status"] == "SHIPPED"
+
+
 def test_admin_order_list_spans_every_customer(calls):
     """The customer-scoped GET /api/v1/orders cannot see across customers —
     this is the deliberately separate, admin-gated capability that can."""
@@ -863,3 +907,199 @@ def test_admin_order_list_spans_every_customer(calls):
 
     seen = {o["order_id"] for o in client.get("/api/v1/orders/admin").json()["items"]}
     assert {first, second} <= seen
+
+
+# ---------------------------------------------------------------------------
+# payment_method on every terminal event (CP-020) — the admin toast needs to
+# distinguish card from cash-on-delivery, not just the outcome
+# ---------------------------------------------------------------------------
+
+def test_confirmed_card_order_event_carries_payment_method(calls):
+    client.post("/api/v1/orders", json=basket())
+    data = json.loads(outbox_records()[0]["payload"])["data"]
+    assert data["payment_method"] == "card"
+    assert data["status"] == states.CONFIRMED
+
+
+def test_confirmed_cash_on_delivery_order_event_carries_payment_method(calls):
+    client.post("/api/v1/orders", json=basket(payment_method="cash_on_delivery"))
+    data = json.loads(outbox_records()[0]["payload"])["data"]
+    assert data["payment_method"] == "cash_on_delivery"
+    assert data["status"] == states.PENDING_ON_DELIVERY
+
+
+def test_rejected_order_event_carries_the_payment_method_that_was_chosen(calls, monkeypatch):
+    """_reject fires before the card/COD branch — the event still owes the
+    admin dashboard an accurate payment_method for whichever was chosen."""
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Insufficient stock for: p1")
+    ))
+    client.post("/api/v1/orders", json=basket(payment_method="cash_on_delivery"))
+    data = json.loads(outbox_records()[0]["payload"])["data"]
+    assert data["payment_method"] == "cash_on_delivery"
+    assert data["status"] == states.REJECTED
+
+
+def test_declined_card_order_event_carries_payment_method(calls, monkeypatch):
+    monkeypatch.setattr(clients, "charge_payment", lambda *a, **k: (_ for _ in ()).throw(
+        DownstreamRejected(402, "Card declined by issuer", {"payment_id": "pay-x"})
+    ))
+    client.post("/api/v1/orders", json=basket())
+    data = json.loads(outbox_records()[0]["payload"])["data"]
+    assert data["payment_method"] == "card"
+    assert data["status"] == states.FAILED
+
+
+# ---------------------------------------------------------------------------
+# OrderNeedsReconciliation publishing (CP-020) — best-effort, fires only on
+# COMPENSATION_FAILED, the one terminal state that publishes no ordinary
+# event at all (see test_failed_compensation_is_a_visible_terminal_state)
+# ---------------------------------------------------------------------------
+
+def test_compensation_failure_publishes_needs_reconciliation(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    published = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: published.append(kwargs) or {},
+    )
+    monkeypatch.setattr(clients, "charge_payment", lambda *a, **k: (_ for _ in ()).throw(
+        DownstreamRejected(402, "Card declined by issuer", {"payment_id": "pay-x"})
+    ))
+    monkeypatch.setattr(clients, "release_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamUnknown("inventory unreachable")
+    ))
+
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    assert len(published) == 1
+    entry = published[0]["Entries"][0]
+    assert entry["Source"] == "smartretailx.orders"
+    assert entry["DetailType"] == "OrderNeedsReconciliation"
+    data = json.loads(entry["Detail"])["data"]
+    assert data["order_id"] == order_id
+    assert "release failed" in data["reason"]
+    assert "correlation_id" in data
+
+
+def test_stock_outcome_unknown_publishes_needs_reconciliation(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    published = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: published.append(kwargs) or {},
+    )
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamUnknown("no response from inventory: timeout")
+    ))
+
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    assert len(published) == 1
+    data = json.loads(published[0]["Entries"][0]["Detail"])["data"]
+    assert data["order_id"] == order_id
+
+
+def test_payment_outcome_unknown_publishes_needs_reconciliation(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    published = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: published.append(kwargs) or {},
+    )
+    monkeypatch.setattr(clients, "charge_payment", lambda *a, **k: (_ for _ in ()).throw(
+        DownstreamUnknown("payment service returned 500")
+    ))
+
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    assert len(published) == 1
+    data = json.loads(published[0]["Entries"][0]["Detail"])["data"]
+    assert data["order_id"] == order_id
+    assert data["payment_id"] is None
+
+
+def test_a_reconciliation_publish_failure_does_not_fail_the_response(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+
+    def boom(**kwargs):
+        raise RuntimeError("EventBridge is unreachable")
+
+    monkeypatch.setattr("app.events._events_client.put_events", boom)
+    monkeypatch.setattr(clients, "charge_payment", lambda *a, **k: (_ for _ in ()).throw(
+        DownstreamRejected(402, "Card declined by issuer", {"payment_id": "pay-x"})
+    ))
+    monkeypatch.setattr(clients, "release_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamUnknown("inventory unreachable")
+    ))
+
+    response = client.post("/api/v1/orders", json=basket())
+
+    assert response.status_code == 201
+    assert response.json()["status"] == states.COMPENSATION_FAILED
+
+
+def test_no_reconciliation_publish_attempted_when_event_bus_name_is_unset(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", None)
+    published = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: published.append(kwargs) or {},
+    )
+    monkeypatch.setattr(clients, "charge_payment", lambda *a, **k: (_ for _ in ()).throw(
+        DownstreamRejected(402, "Card declined by issuer", {"payment_id": "pay-x"})
+    ))
+    monkeypatch.setattr(clients, "release_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamUnknown("inventory unreachable")
+    ))
+
+    client.post("/api/v1/orders", json=basket())
+
+    assert published == []
+
+
+# ---------------------------------------------------------------------------
+# Admin order summary — the analytics panel's backend
+# ---------------------------------------------------------------------------
+
+def test_order_summary_aggregates_todays_orders(calls, monkeypatch):
+    client.post("/api/v1/orders", json=basket())
+    client.post("/api/v1/orders", json=basket(payment_method="cash_on_delivery"))
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Insufficient stock for: p1")
+    ))
+    client.post("/api/v1/orders", json=basket())
+
+    summary = client.get("/api/v1/orders/admin/summary").json()
+
+    assert summary["total_orders"] == 3
+    assert summary["by_status"][states.CONFIRMED] == 1
+    assert summary["by_status"][states.PENDING_ON_DELIVERY] == 1
+    assert summary["by_status"][states.REJECTED] == 1
+    assert summary["by_payment_method"]["card"] == 2
+    assert summary["by_payment_method"]["cash_on_delivery"] == 1
+
+
+def test_order_summary_revenue_excludes_rejected_and_failed(calls, monkeypatch):
+    client.post("/api/v1/orders", json=basket())  # CONFIRMED, $20.00
+    monkeypatch.setattr(clients, "reserve_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamRejected(409, "Insufficient stock for: p1")
+    ))
+    client.post("/api/v1/orders", json=basket())  # REJECTED — never charged
+
+    summary = client.get("/api/v1/orders/admin/summary").json()
+
+    assert summary["total_revenue"] == "20.00"
+    assert summary["average_order_value"] == "10.00"  # revenue / ALL orders, not just confirmed ones
+
+
+def test_order_summary_with_no_orders_today_is_all_zeroes(calls):
+    summary = client.get("/api/v1/orders/admin/summary").json()
+
+    assert summary == {
+        "total_orders": 0,
+        "total_revenue": "0",
+        "average_order_value": "0",
+        "by_status": {},
+        "by_payment_method": {},
+    }

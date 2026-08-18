@@ -302,3 +302,107 @@ def test_batch_reserve_zero_or_negative_quantity_is_rejected():
     assert client.post("/api/v1/inventory/reserve", json=[
         {"product_id": "p1", "quantity": -5},
     ]).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# StockLevelChanged publishing (CP-020) — best-effort, never blocks the
+# actual stock mutation
+# ---------------------------------------------------------------------------
+
+def test_reserve_publishes_stock_changed_with_current_counts(monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    calls = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+
+    response = client.post("/api/v1/inventory/p1/reserve?quantity=10")
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    entry = calls[0]["Entries"][0]
+    assert entry["Source"] == "smartretailx.inventory"
+    assert entry["DetailType"] == "StockLevelChanged"
+    detail = __import__("json").loads(entry["Detail"])
+    data = detail["data"]
+    assert data["product_id"] == "p1"
+    assert data["available"] == 90
+    assert data["reserved"] == 10
+    assert "correlation_id" in data
+
+
+def test_batch_reserve_publishes_one_event_per_distinct_product(monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    calls = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+
+    response = client.post("/api/v1/inventory/reserve", json=[
+        {"product_id": "p1", "quantity": 1},
+        {"product_id": "p1", "quantity": 1},
+        {"product_id": "p2", "quantity": 1},
+    ])
+
+    assert response.status_code == 200
+    assert len(calls) == 2  # p1 and p2 — the duplicate p1 line does not double-publish
+
+
+def test_a_publish_failure_does_not_fail_the_actual_reservation(monkeypatch):
+    """The mutation already succeeded in DynamoDB by the time this is
+    called — a failed publish must never turn that into a failed request."""
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+
+    def boom(**kwargs):
+        raise RuntimeError("EventBridge is unreachable")
+
+    monkeypatch.setattr("app.events._events_client.put_events", boom)
+
+    response = client.post("/api/v1/inventory/p1/reserve?quantity=10")
+
+    assert response.status_code == 200
+    assert _stock("p1")["reserved_quantity"] == 10
+
+
+def test_no_publish_attempted_when_event_bus_name_is_unset(monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", None)
+    calls = []
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+
+    response = client.post("/api/v1/inventory/p1/reserve?quantity=10")
+
+    assert response.status_code == 200
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Low-stock admin endpoint — the analytics panel's alert list
+# ---------------------------------------------------------------------------
+
+def test_low_stock_returns_only_products_at_or_below_the_default_threshold():
+    response = client.get("/api/v1/inventory/admin/low-stock")
+
+    assert response.status_code == 200
+    ids = {item["product_id"] for item in response.json()}
+    assert ids == {"p2"}  # p1 has 100, well above the default threshold of 10
+
+
+def test_low_stock_threshold_is_configurable():
+    response = client.get("/api/v1/inventory/admin/low-stock?threshold=200")
+
+    ids = {item["product_id"] for item in response.json()}
+    assert ids == {"p1", "p2"}  # both now within a deliberately high threshold
+
+
+def test_low_stock_threshold_of_zero_only_catches_genuinely_empty_stock():
+    client.post("/api/v1/inventory/p2/reserve?quantity=5")  # p2 now at 0 available
+
+    response = client.get("/api/v1/inventory/admin/low-stock?threshold=0")
+
+    ids = {item["product_id"] for item in response.json()}
+    assert ids == {"p2"}

@@ -15,5 +15,9 @@ AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
 # The name of our table.
 INVENTORY_TABLE = os.environ.get("INVENTORY_TABLE", "Inventory")
 
+# EventBridge bus for best-effort StockLevelChanged publishes (CP-020) — not
+# used for anything transactional, so unset locally is fine.
+EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME")
+
 # Used only by isolated pytest runs, which do not have an API Gateway event.
 AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"

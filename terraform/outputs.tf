@@ -55,6 +55,13 @@ output "vpc_id" {
   value = aws_vpc.main.id
 }
 
+# The WebSocket connection URL (CP-020) — a separate endpoint from
+# api_base_url above; API Gateway does not let an HTTP API and a WebSocket
+# API share one gateway.
+output "websocket_url" {
+  value = "${aws_apigatewayv2_api.websocket.api_endpoint}/${aws_apigatewayv2_stage.websocket.name}"
+}
+
 # The single public entry point: serves the React build at / and proxies
 # the API at /api/*, so the frontend needs no separate API host and no CORS.
 output "site_url" {

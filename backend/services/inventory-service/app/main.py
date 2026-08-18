@@ -1,11 +1,11 @@
 import logging
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from mangum import Mangum
 from app.models import InventoryItem
-from app import repository
+from app import events, repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
 from app.auth import require_admin
@@ -56,6 +56,18 @@ def get_stock(product_id: str):
     return item
 
 
+@app.get("/api/v1/inventory/admin/low-stock", response_model=list[InventoryItem])
+def low_stock(
+    threshold: int = Query(default=10, ge=0),
+    _claims: dict = Depends(require_admin),
+):
+    """Every product at or below `threshold` available units — the admin
+    dashboard's low-stock alert list. A flat, global threshold by design
+    (see repository.list_low_stock()'s own docstring for the "something
+    smarter" alternatives considered and not built)."""
+    return repository.list_low_stock(threshold)
+
+
 @app.post("/api/v1/inventory/{product_id}/reserve")
 def reserve_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
     """
@@ -70,10 +82,12 @@ def reserve_stock(product_id: str, quantity: int, _claims: dict = Depends(requir
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     try:
-        return repository.reserve_stock(product_id, quantity)
+        result = repository.reserve_stock(product_id, quantity)
     except ValueError as e:
         # Not enough stock — this is the "unavailable" response.
         raise HTTPException(status_code=409, detail=str(e))
+    events.publish_stock_changed(product_id)
+    return result
 
 
 @app.post("/api/v1/inventory/{product_id}/release")
@@ -82,9 +96,11 @@ def release_stock(product_id: str, quantity: int, _claims: dict = Depends(requir
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     try:
-        return repository.release_stock(product_id, quantity)
+        result = repository.release_stock(product_id, quantity)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    events.publish_stock_changed(product_id)
+    return result
 
 @app.post("/api/v1/inventory/{product_id}/confirm")
 def confirm_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
@@ -92,16 +108,20 @@ def confirm_stock(product_id: str, quantity: int, _claims: dict = Depends(requir
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
     try:
-        return repository.confirm_stock(product_id, quantity)
+        result = repository.confirm_stock(product_id, quantity)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    events.publish_stock_changed(product_id)
+    return result
 
 @app.post("/api/v1/inventory/{product_id}/add")
 def add_stock(product_id: str, quantity: int, _claims: dict = Depends(require_admin)):
     """Add stock (restock or create initial record)."""
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="Quantity must be positive")
-    return repository.add_stock(product_id, quantity)
+    result = repository.add_stock(product_id, quantity)
+    events.publish_stock_changed(product_id)
+    return result
 
 MAX_TRANSACTION_ITEMS = 100
 
@@ -126,6 +146,8 @@ def reserve_batch(items: list[StockOperation]):
         repository.reserve_many(items)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    for product_id in {i.product_id for i in items}:
+        events.publish_stock_changed(product_id)
     return {"status": "reserved", "products": len({i.product_id for i in items})}
 
 
@@ -136,6 +158,8 @@ def release_batch(items: list[StockOperation]):
         repository.release_many(items)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    for product_id in {i.product_id for i in items}:
+        events.publish_stock_changed(product_id)
     return {"status": "released", "products": len({i.product_id for i in items})}
 
 
@@ -146,6 +170,8 @@ def confirm_batch(items: list[StockOperation]):
         repository.confirm_many(items)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    for product_id in {i.product_id for i in items}:
+        events.publish_stock_changed(product_id)
     return {"status": "confirmed", "products": len({i.product_id for i in items})}
 
 handler = Mangum(app)

@@ -5,6 +5,7 @@ import ProductImage from "./ProductImage.jsx";
 import LoadingState from "./LoadingState.jsx";
 import ErrorState from "./ErrorState.jsx";
 import { formatPrice } from "../lib/currency.js";
+import { useWebSocketMessage } from "../realtime/WebSocketProvider.jsx";
 
 export default function ProductDetail({ productId, onBack, onAddToCart, idToken }) {
   const [product, setProduct] = useState(null);
@@ -37,6 +38,14 @@ export default function ProductDetail({ productId, onBack, onAddToCart, idToken 
       });
     return () => { cancelled = true; };
   }, [productId, idToken]);
+
+  // A live top-up on the fetch above, not a replacement for it — see
+  // ProductCard's own version of this for the full reasoning.
+  const handleStockUpdate = useCallback((message) => {
+    if (message.product_id !== productId) return;
+    setStock({ available_quantity: message.available });
+  }, [productId]);
+  useWebSocketMessage("StockUpdated", handleStockUpdate);
 
   return (
     <div>

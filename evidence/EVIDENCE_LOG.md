@@ -92,6 +92,36 @@ the top right. A screenshot of the wrong region proves nothing.
 | 35 | `cost/01-budget-alert.png` | AWS Budgets showing the configured alert | 1 | ☐ |
 | 36 | `cost/02-cost-explorer.png` | Actual spend to date — supports the cost-effectiveness stance, not a £0 claim | 1 | ☐ |
 
+### Notification service and today's fixes (2026-08-18)
+
+| # | Filename | What it must show | Task | Done |
+|---|---|---|---|---|
+| 45 | `tests/06-pytest-order-service-with-correlation-id.png` | `pytest -v` in order-service — 59 passed, the two `correlation_id` regression tests visible | 8 | ☐ |
+| 46 | `tests/07-pytest-notification-service.png` | `pytest -v` in notification-service — 14 passed | 8 | ☐ |
+| 47 | `terraform/05-plan-six-fixes.png` | `terraform plan -var-file=dev.tfvars` — 6 in-place updates (IAM, DLQ reporting, 3x digest pin, VPC removal), **0 to destroy** | 1 | ☐ |
+| 48 | `lambda/03-notification-service-no-vpc.png` | notification-service → Configuration → VPC tab, **no VPC configured** | 3, 5 | ☐ |
+| 49 | `iam/03-notification-service-policy-json.png` | The notification-service-policy JSON — `GetItem`+`PutItem` on one table, `SendEmail` scoped to one identity ARN | 3 | ☐ |
+| 50 | `sqs/01-notifications-trigger-partial-batch.png` | notification-service → Triggers → SQS trigger config, **"Report batch item failures" enabled** | 5 | ☐ |
+| 51 | `ses/01-identity-verified.png` | SES → Identities → the sender address, status **Verified** | 3 | ☐ |
+| 52 | `dynamodb/06-notifications-table-item.png` | Notifications table — a real sent `event_id` from a live checkout | 4 | ☐ |
+| 53 | `observability/06-notification-log-correlation-id.png` | CloudWatch Logs, notification-service — a `Sent OrderConfirmed receipt ... correlation_id=...` line, same ID as the matching order-api log line | 4, 7 | ☐ |
+| 54 | `saga/06-receipt-email-inbox.png` | The actual received receipt email — subject and body visible | 4, 8 | ☐ |
+
+### WebSocket real-time push (CP-020, backend built 2026-08-18 — capture once deployed)
+
+| # | Filename | What it must show | Task | Done |
+|---|---|---|---|---|
+| 55 | `tests/08-pytest-websocket-service.png` | `pytest -v` in websocket-service — 19 passed, token-verification test names legible | 4, 8 | ☐ |
+| 56 | `tests/09-pytest-order-service-reconciliation.png` | order-service — 68 passed, the `payment_method`/`needs_reconciliation` tests visible | 4, 8 | ☐ |
+| 57 | `terraform/06-plan-websocket-infra.png` | `terraform plan -var-file=dev.tfvars` — the WebSocket API, connections table, three Lambdas, EventBridge rules, SQS+DLQ all appearing as additions | 1, 4 | ☐ |
+| 58 | `api-gateway/03-websocket-routes.png` | API Gateway → the WebSocket API → Routes: `$connect` and `$disconnect`, each with its Lambda integration | 4 | ☐ |
+| 59 | `lambda/04-websocket-functions.png` | Lambda → Functions filtered on `websocket` — all three (`connect`, `disconnect`, `push-consumer`) | 4 | ☐ |
+| 60 | `dynamodb/07-websocket-connections-table.png` | The connections table with a real row after connecting from the deployed frontend — `role` visible | 3, 4 | ☐ |
+| 61 | `events/03-order-rules-two-targets.png` | EventBridge → the `order-confirmed`/`order-failed` rules, each now showing **two** targets (Notification's queue and the WebSocket push queue) | 4 | ☐ |
+| 62 | `events/04-needs-reconciliation-rule.png` | The new `order-needs-reconciliation` rule and its target | 4, 5 | ☐ |
+| 63 | `saga/07-live-stock-ticker.png` | Browser DevTools Network tab (WS filter) on a product page, showing the open WebSocket connection and a `StockUpdated` frame arriving after a reservation elsewhere | 4 | ☐ |
+| 64 | `saga/08-admin-order-toast.png` | The admin dashboard at the instant an order resolves — the toast showing order ID, outcome, and payment method | 4, 8 | ☐ |
+
 ---
 
 ## Notes on specific shots

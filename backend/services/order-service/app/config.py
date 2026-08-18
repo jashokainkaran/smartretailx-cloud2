@@ -20,6 +20,12 @@ ORDERS_TABLE = os.environ.get("ORDERS_TABLE", "Orders")
 # reach CONFIRMED without its OrderConfirmed event being owed.
 ORDER_OUTBOX_TABLE = os.environ.get("ORDER_OUTBOX_TABLE", "OrderOutbox")
 
+# EventBridge bus for a best-effort OrderPlaced publish (CP-020) — separate
+# from ORDER_OUTBOX_TABLE above: that transactional path is reserved for the
+# saga's terminal events, where a lost event would be a real problem. A lost
+# OrderPlaced only misses one live toast on the admin dashboard.
+EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME")
+
 # The services the saga orchestrates (ADR-028). These are ENVIRONMENT
 # CONFIGURATION, not constants: locally they are uvicorn on localhost, and
 # once the APIs sit behind API Gateway they become HTTPS URLs. Hardcoding

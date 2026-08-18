@@ -35,7 +35,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app import clients, repository, states
+from app import clients, events, repository, states
 from app.clients import DownstreamRejected, DownstreamUnknown
 from app.correlation import current_correlation_id
 from app.models import Order, OrderCreate, OrderLineItem
@@ -129,7 +129,7 @@ def _line_items_for_event(line_items: list[OrderLineItem]):
     ]
 
 
-def _reject(order_id: str, customer_id: str, contact_email: str, recipient_name: str, line_items, reason: str):
+def _reject(order_id: str, customer_id: str, contact_email: str, recipient_name: str, payment_method: str, line_items, reason: str):
     """
     Out of stock. Nothing was taken, so there is nothing to compensate —
     the reserve transaction is all-or-nothing, so a failure leaves every
@@ -149,6 +149,7 @@ def _reject(order_id: str, customer_id: str, contact_email: str, recipient_name:
             "customer_id": customer_id,
             "contact_email": contact_email,
             "recipient_name": recipient_name,
+            "payment_method": payment_method,
             "status": states.REJECTED,
             "reason": reason,
             "items": _line_items_for_event(line_items),
@@ -180,11 +181,13 @@ def _compensate_release(order_id, customer_id, contact_email, recipient_name, li
             "compensation failed order_id=%s action=release error=%s correlation_id=%s",
             order_id, exc, current_correlation_id(),
         )
+        failure_reason = f"payment declined ({reason}); stock release failed: {exc}"
+        events.publish_needs_reconciliation(order_id, failure_reason, payment_id)
         return repository.set_status(
             order_id,
             states.TAKING_PAYMENT,
             states.COMPENSATION_FAILED,
-            failure_reason=f"payment declined ({reason}); stock release failed: {exc}",
+            failure_reason=failure_reason,
             payment_id=payment_id,
         )
 
@@ -202,6 +205,7 @@ def _compensate_release(order_id, customer_id, contact_email, recipient_name, li
             "customer_id": customer_id,
             "contact_email": contact_email,
             "recipient_name": recipient_name,
+            "payment_method": "card",  # this branch only follows a card decline
             "status": states.FAILED,
             "reason": reason,
             "items": _line_items_for_event(line_items),
@@ -230,11 +234,13 @@ def _compensate_refund(order_id, customer_id, contact_email, recipient_name, lin
             "compensation failed order_id=%s action=refund payment_id=%s error=%s correlation_id=%s",
             order_id, payment_id, exc, current_correlation_id(),
         )
+        failure_reason = f"stock confirm failed ({reason}); refund failed: {exc}"
+        events.publish_needs_reconciliation(order_id, failure_reason, payment_id)
         return repository.set_status(
             order_id,
             states.CONFIRMING_STOCK,
             states.COMPENSATION_FAILED,
-            failure_reason=f"stock confirm failed ({reason}); refund failed: {exc}",
+            failure_reason=failure_reason,
             payment_id=payment_id,
         )
 
@@ -252,6 +258,7 @@ def _compensate_refund(order_id, customer_id, contact_email, recipient_name, lin
             "customer_id": customer_id,
             "contact_email": contact_email,
             "recipient_name": recipient_name,
+            "payment_method": "card",  # this branch only follows a successful card charge
             "status": states.FAILED,
             "reason": reason,
             "items": _line_items_for_event(line_items),
@@ -295,6 +302,7 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, contact_email: st
                 "customer_id": customer_id,
                 "contact_email": contact_email,
                 "recipient_name": recipient_name,
+                "payment_method": "cash_on_delivery",
                 "status": states.FAILED,
                 "reason": reason,
                 "items": _line_items_for_event(line_items),
@@ -319,6 +327,7 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, contact_email: st
             "customer_id": customer_id,
             "contact_email": contact_email,
             "recipient_name": recipient_name,
+            "payment_method": "cash_on_delivery",
             "total": str(total),
             "status": states.PENDING_ON_DELIVERY,
             "items": _line_items_for_event(line_items),
@@ -339,18 +348,23 @@ def _payment_unknown(order_id: str, reason: str):
     UNKNOWN payment with 409 for exactly this reason (ADR-034).
 
     So: record the uncertainty, alarm on it, and let a human reconcile
-    against the PSP. No event is published — nothing downstream should act
-    on an order whose outcome is genuinely undetermined.
+    against the PSP. No BUSINESS event is published (OrderConfirmed/
+    OrderFailed) — nothing customer-facing should act on an order whose
+    outcome is genuinely undetermined. A best-effort OrderNeedsReconciliation
+    still fires, purely to surface it live on the admin dashboard (CP-020) —
+    an internal signal, not a claim about what happened to the order.
     """
     logger.error(
         "payment outcome unknown order_id=%s reason=%s correlation_id=%s",
         order_id, reason, current_correlation_id(),
     )
+    failure_reason = f"payment outcome not observed: {reason}"
+    events.publish_needs_reconciliation(order_id, failure_reason, payment_id=None)
     return repository.set_status(
         order_id,
         states.TAKING_PAYMENT,
         states.PAYMENT_UNKNOWN,
-        failure_reason=f"payment outcome not observed: {reason}",
+        failure_reason=failure_reason,
     )
 
 
@@ -376,11 +390,13 @@ def _stock_unknown(order_id, from_state, reason, payment_id=None):
         "stock outcome unknown order_id=%s from=%s reason=%s correlation_id=%s",
         order_id, from_state, reason, current_correlation_id(),
     )
+    failure_reason = f"inventory outcome not observed at {from_state}: {reason}"
+    events.publish_needs_reconciliation(order_id, failure_reason, payment_id)
     return repository.set_status(
         order_id,
         from_state,
         states.STOCK_UNKNOWN,
-        failure_reason=f"inventory outcome not observed at {from_state}: {reason}",
+        failure_reason=failure_reason,
         payment_id=payment_id,
     )
 
@@ -429,7 +445,7 @@ def run_checkout(request: OrderCreate):
     except DownstreamRejected as exc:
         # 409 — at least one line is short. The transaction guarantees
         # nothing at all was reserved, so there is nothing to undo.
-        return _reject(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, line_items, str(exc.detail))
+        return _reject(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, order.payment_method, line_items, str(exc.detail))
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.RESERVING_STOCK, str(exc))
 
@@ -489,7 +505,9 @@ def run_checkout(request: OrderCreate):
             "customer_id": customer_id,
             "contact_email": order.contact_email,
             "recipient_name": order.shipping_address.recipient_name,
+            "payment_method": "card",  # this branch only follows a successful card charge
             "total": str(total),
+            "status": states.CONFIRMED,
             "items": _line_items_for_event(line_items),
             "correlation_id": current_correlation_id(),
         },

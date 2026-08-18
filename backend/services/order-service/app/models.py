@@ -187,5 +187,15 @@ class OrderPage(BaseModel):
     next_cursor: Optional[str] = None
 
 
+class OrderSummary(BaseModel):
+    """The admin dashboard's analytics panel — aggregated, not a list of
+    orders, so there is no pagination shape to mirror here."""
+    total_orders: int
+    total_revenue: str
+    average_order_value: str
+    by_status: dict[str, int]
+    by_payment_method: dict[str, int]
+
+
 class DeliveryStatusUpdate(BaseModel):
     delivery_status: DeliveryStatus

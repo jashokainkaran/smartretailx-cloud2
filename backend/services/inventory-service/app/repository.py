@@ -46,6 +46,19 @@ def get_stock(product_id: str):
     return response.get("Item")
 
 
+def list_low_stock(threshold: int):
+    """Every product at or below `threshold` available units — the admin
+    dashboard's low-stock alert list. A genuine Scan — see
+    IMPLEMENTATION_RECORD.md for why, given this project avoids one
+    everywhere else."""
+    response = table.scan()
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return [item for item in items if item.get("available_quantity", 0) <= threshold]
+
+
 def reserve_stock(product_id: str, quantity: int):
     """
     Reserve `quantity` units. Atomically moves units available -> reserved,
