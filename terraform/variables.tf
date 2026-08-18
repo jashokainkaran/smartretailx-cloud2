@@ -26,3 +26,8 @@ variable "dlq_max_receive_count" {
   type        = number
   default     = 3
 }
+
+variable "notification_sender_email" {
+  description = "The email address the Notification service sends receipts from. Must be verified in SES — AWS sends a confirmation link to this address that must be clicked before sending will work. While the SES account is in sandbox mode, the recipient of any test send must also be a verified address."
+  type        = string
+}

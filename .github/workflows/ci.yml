@@ -31,6 +31,7 @@ jobs:
           - inventory-service
           - payment-service
           - order-service
+          - notification-service
 
     # Each test job gets its own temporary DynamoDB Local database.
     services:
@@ -151,6 +152,7 @@ jobs:
           - payment-service
           - order-service
           - outbox-relay
+          - notification-service
 
     steps:
       - name: Download repository code
@@ -176,7 +178,7 @@ jobs:
       - name: Scan Python dependencies
         run: |
           python -m pip install --upgrade pip pip-audit
-          for service in product-service inventory-service payment-service order-service outbox-relay; do
+          for service in product-service inventory-service payment-service order-service outbox-relay notification-service; do
             pip-audit -r "backend/services/$service/requirements.txt"
           done
 

@@ -8,3 +8,6 @@ cognito-post-confirmation.zip
 # Variable files may contain sensitive values
 *.tfvars
 !example.tfvars
+
+# Saved plan files are local working artifacts, not source
+tfplan*
