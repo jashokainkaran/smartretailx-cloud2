@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import ProductImage from "./ProductImage.jsx";
+import ProductImage from "../../src/components/ProductImage.jsx";
 
 // This is a direct regression test for a real bug found live this session:
 // a product's image_url pointed at a stockcake.com webpage, not an image

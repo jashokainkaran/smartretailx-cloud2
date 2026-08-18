@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import ProductCard from "./ProductCard.jsx";
-import { fetchStock } from "../api/inventory.js";
+import ProductCard from "../../src/components/ProductCard.jsx";
+import { fetchStock } from "../../src/api/inventory.js";
 
 // The real network call (api/inventory.js -> api/http.js -> fetch) is
 // replaced entirely — a component test proves the COMPONENT's behaviour
 // given a response, not that the real backend is reachable. That's what
 // the backend's own integration tests and the manual live testing already
 // cover.
-vi.mock("../api/inventory.js", () => ({
+vi.mock("../../src/api/inventory.js", () => ({
   fetchStock: vi.fn(),
 }));
 

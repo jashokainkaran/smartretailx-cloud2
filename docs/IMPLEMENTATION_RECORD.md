@@ -2213,7 +2213,7 @@ this test type. That gap has a name now (finding 3 above) rather than being sile
 **Vitest + React Testing Library set up from nothing.** Neither existed in the frontend before
 this — no test runner, no `test` script, no test files. Added as dev dependencies, configured via
 a `test` block inside the existing `vite.config.js` (Vitest reads the same file rather than
-needing a separate config), a `src/test/setup.js` for global test setup, and `npm test` in
+needing a separate config), a `frontend/tests/setup.js` for global test setup, and `npm test` in
 `package.json`.
 
 **Two real tooling failures hit and fixed on the very first run — not test-code bugs, environment

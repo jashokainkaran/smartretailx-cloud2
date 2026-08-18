@@ -17,7 +17,7 @@ export default defineConfig({
   // a real browser. setupFiles wires in jest-dom's matchers once globally.
   test: {
     environment: "jsdom",
-    setupFiles: ["./src/test/setup.js"],
+    setupFiles: ["./tests/setup.js"],
     // "forks" (Vitest's default) spawns separate OS processes for test
     // workers, which timed out trying to start in this environment.
     // "threads" runs workers in-process instead and starts reliably here.

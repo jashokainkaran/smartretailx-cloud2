@@ -31,5 +31,4 @@ dist/
 .vscode/
 
 # Internal planning docs (excluded by choice)
-docs/architecture/ARCHITECTURE_DECISIONS.md
-docs/PROJECT_BRIEF.md
+docs/
