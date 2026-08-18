@@ -12,6 +12,16 @@ logger = logging.getLogger(__name__)
 _events_client = boto3.client("events", region_name=config.AWS_REGION)
 
 
+def _raise_if_rejected(response: dict) -> None:
+    """put_events() can return a 200-level "success" for the call itself
+    while rejecting the one entry inside it — FailedEntryCount is not
+    reflected as an exception, so it has to be checked explicitly or a
+    rejected publish looks identical to a delivered one."""
+    if response.get("FailedEntryCount", 0) > 0:
+        error = response["Entries"][0].get("ErrorMessage", "unknown error")
+        raise RuntimeError(f"EventBridge rejected the entry: {error}")
+
+
 def publish_needs_reconciliation(order_id: str, reason: str, payment_id: str | None) -> None:
     """Best-effort, direct publish — not the transactional order_outbox
     path. Fires only when a compensating action itself fails
@@ -24,7 +34,7 @@ def publish_needs_reconciliation(order_id: str, reason: str, payment_id: str | N
     if not config.EVENT_BUS_NAME:
         return  # unset locally; nothing to publish to
     try:
-        _events_client.put_events(Entries=[{
+        response = _events_client.put_events(Entries=[{
             "Source": "smartretailx.orders",
             "DetailType": "OrderNeedsReconciliation",
             "EventBusName": config.EVENT_BUS_NAME,
@@ -37,6 +47,7 @@ def publish_needs_reconciliation(order_id: str, reason: str, payment_id: str | N
                 }
             }),
         }])
+        _raise_if_rejected(response)
     except Exception:
         logger.exception("Failed to publish OrderNeedsReconciliation order_id=%s", order_id)
 
@@ -67,7 +78,7 @@ def publish_delivery_status_changed(order: dict) -> None:
         return  # unset locally; nothing to publish to
     order_id = order["order_id"]
     try:
-        _events_client.put_events(Entries=[{
+        response = _events_client.put_events(Entries=[{
             "Source": "smartretailx.orders",
             "DetailType": "DeliveryStatusChanged",
             "EventBusName": config.EVENT_BUS_NAME,
@@ -82,5 +93,6 @@ def publish_delivery_status_changed(order: dict) -> None:
                 }
             }),
         }])
+        _raise_if_rejected(response)
     except Exception:
         logger.exception("Failed to publish DeliveryStatusChanged order_id=%s", order_id)

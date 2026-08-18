@@ -25,7 +25,7 @@ def publish_stock_changed(product_id: str) -> None:
     if item is None:
         return
     try:
-        _events_client.put_events(Entries=[{
+        response = _events_client.put_events(Entries=[{
             "Source": "smartretailx.inventory",
             "DetailType": "StockLevelChanged",
             "EventBusName": config.EVENT_BUS_NAME,
@@ -38,5 +38,12 @@ def publish_stock_changed(product_id: str) -> None:
                 }
             }),
         }])
+        # put_events() can return a 200-level "success" for the call itself
+        # while rejecting the one entry inside it — FailedEntryCount is not
+        # reflected as an exception, so it has to be checked explicitly or a
+        # rejected publish looks identical to a delivered one.
+        if response.get("FailedEntryCount", 0) > 0:
+            error = response["Entries"][0].get("ErrorMessage", "unknown error")
+            raise RuntimeError(f"EventBridge rejected the entry: {error}")
     except Exception:
         logger.exception("Failed to publish StockLevelChanged product_id=%s", product_id)

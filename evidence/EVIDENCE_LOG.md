@@ -122,6 +122,25 @@ the top right. A screenshot of the wrong region proves nothing.
 | 63 | `saga/07-live-stock-ticker.png` | Browser DevTools Network tab (WS filter) on a product page, showing the open WebSocket connection and a `StockUpdated` frame arriving after a reservation elsewhere | 4 | ☐ |
 | 64 | `saga/08-admin-order-toast.png` | The admin dashboard at the instant an order resolves — the toast showing order ID, outcome, and payment method | 4, 8 | ☐ |
 
+### Delivery tracking, admin analytics, and the third review's fixes (2026-08-19 — capture once deployed)
+
+| # | Filename | What it must show | Task | Done |
+|---|---|---|---|---|
+| 65 | `tests/10-pytest-order-service-third-audit.png` | `pytest -v` in order-service — 75 passed, the `FailedEntryCount`, `average_order_value`, and delivery-status publish tests all visible | 8 | ☐ |
+| 66 | `tests/11-pytest-inventory-service-third-audit.png` | `pytest -v` in inventory-service — 35 passed, the rejected-entry test visible | 8 | ☐ |
+| 67 | `tests/12-pytest-websocket-batch-failure.png` | `pytest -v` in websocket-service — 21 passed, `test_one_bad_record_does_not_fail_the_whole_batch` visible | 8 | ☐ |
+| 68 | `tests/13-pytest-notification-delivery-status.png` | `pytest -v` in notification-service — 16 passed, the delivery-status email tests visible | 8 | ☐ |
+| 69 | `tests/14-vitest-frontend.png` | `npm test` in frontend — 9 passed | 8 | ☐ |
+| 70 | `terraform/07-plan-remaining-fixes.png` | `terraform plan -var-file=dev.tfvars` — `EVENT_BUS_NAME` on both Lambdas, the inventory-api `dynamodb:Scan` grant, and `ReportBatchItemFailures` on the WebSocket queue, all as in-place updates | 1 | ☐ |
+| 71 | `iam/04-inventory-scan-grant.png` | inventory-api's IAM policy JSON — the added `dynamodb:Scan` statement, scoped to the inventory table only | 3 | ☐ |
+| 72 | `sqs/02-websocket-trigger-partial-batch.png` | `websocket-push-consumer` → Triggers → SQS trigger config, **"Report batch item failures" enabled** — mirrors shot 50 for Notification's own queue | 5 | ☐ |
+| 73 | `events/05-delivery-status-changed-rule.png` | EventBridge → the new `delivery-status-changed` rule and its one target (Notification's queue) | 4 | ☐ |
+| 74 | `dynamodb/08-order-delivery-status-set.png` | An order item with `delivery_status: "SHIPPED"` (or similar) after an admin `PATCH` | 4 | ☐ |
+| 75 | `saga/09-customer-delivery-status-page.png` | The deployed customer Orders page — the Processing → Shipped → Out for delivery → Delivered step indicator on a real order | 4, 8 | ☐ |
+| 76 | `saga/10-delivery-status-email.png` | The received delivery-status-change email — subject and body visible | 4, 8 | ☐ |
+| 77 | `dashboard/01-analytics-panel.png` | The redesigned admin Dashboard — "Today" (orders, revenue, average order value, payment-method split) and "Operations" groups both visible | 4, 8 | ☐ |
+| 78 | `dashboard/02-low-stock-card.png` | The "Low stock" card showing at least one real product at or below threshold | 4, 8 | ☐ |
+
 ---
 
 ## Notes on specific shots
@@ -138,6 +157,15 @@ sparse recovery GSI entirely. Pair it with shot 28.
 **23 — the outbox.** The absence of `status` is the relay's self-trigger
 guard working: it removes the attribute on publication, so its own update
 does not re-trigger it.
+
+**No screenshot for the `FailedEntryCount` fix or the `VITE_WS_BASE_URL` guard.**
+Both are genuine fixes from the third 2026-08-19 review (see
+`IMPLEMENTATION_RECORD.md`'s consolidated testing index) with a passing
+regression test each — but neither has a state that's meaningfully
+screenshottable: a rejected EventBridge entry only shows up by deliberately
+breaking the bus, and a missing env var is absent, not present, in a
+screenshot. The test itself (shots 65/66) is the evidence for these two, not
+a console capture. Recorded here rather than silently omitted.
 
 **30 — the X-Ray service map.** The strongest single image available: the
 architecture drawn by AWS from real traffic rather than by hand. Capture it

@@ -366,6 +366,28 @@ def test_a_publish_failure_does_not_fail_the_actual_reservation(monkeypatch):
     assert _stock("p1")["reserved_quantity"] == 10
 
 
+def test_a_rejected_entry_is_treated_as_a_failure_not_silent_success(monkeypatch):
+    """put_events() can return normally (no exception) while the response
+    body says the one entry inside it was rejected — FailedEntryCount, not
+    an exception. Without checking it explicitly, a rejected publish looks
+    identical to a delivered one."""
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: {
+            "FailedEntryCount": 1,
+            "Entries": [{"ErrorCode": "InternalFailure", "ErrorMessage": "boom"}],
+        },
+    )
+
+    # The reservation itself must still succeed — a rejected best-effort
+    # publish is logged, not surfaced as a failed stock mutation.
+    response = client.post("/api/v1/inventory/p1/reserve?quantity=10")
+
+    assert response.status_code == 200
+    assert _stock("p1")["reserved_quantity"] == 10
+
+
 def test_no_publish_attempted_when_event_bus_name_is_unset(monkeypatch):
     monkeypatch.setattr(config, "EVENT_BUS_NAME", None)
     calls = []

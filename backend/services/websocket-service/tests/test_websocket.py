@@ -190,9 +190,10 @@ def test_disconnect_removes_the_connection():
 # push_consumer: routes each event type to the right audience
 # ---------------------------------------------------------------------------
 
-def sqs_event(detail_type, data):
+def sqs_event(detail_type, data, message_id="msg-1"):
     return {
         "Records": [{
+            "messageId": message_id,
             "body": __import__("json").dumps({
                 "detail-type": detail_type,
                 "detail": {"data": data},
@@ -215,7 +216,7 @@ def test_stock_level_changed_pushes_to_every_connection(monkeypatch):
         {},
     )
 
-    assert result == {"pushed": 1}
+    assert result == {"pushed": 1, "batchItemFailures": []}
     ids, payload = pushed[0]
     assert set(ids) == {"conn-1", "conn-2"}
     assert payload == {"type": "StockUpdated", "product_id": "p1", "available": 5, "reserved": 2}
@@ -238,7 +239,7 @@ def test_order_confirmed_pushes_to_admins_only(monkeypatch):
         {},
     )
 
-    assert result == {"pushed": 1}
+    assert result == {"pushed": 1, "batchItemFailures": []}
     ids, payload = pushed[0]
     assert ids == ["conn-2"]
     assert payload == {
@@ -265,7 +266,7 @@ def test_order_failed_pushes_to_admins_only(monkeypatch):
         {},
     )
 
-    assert result == {"pushed": 1}
+    assert result == {"pushed": 1, "batchItemFailures": []}
     ids, payload = pushed[0]
     assert ids == ["conn-2"]
     assert payload["type"] == "OrderResolved"
@@ -291,7 +292,7 @@ def test_order_needs_reconciliation_pushes_to_admins_only(monkeypatch):
         {},
     )
 
-    assert result == {"pushed": 1}
+    assert result == {"pushed": 1, "batchItemFailures": []}
     ids, payload = pushed[0]
     assert ids == ["conn-2"]
     assert payload["type"] == "OrderNeedsReconciliation"
@@ -301,4 +302,33 @@ def test_order_needs_reconciliation_pushes_to_admins_only(monkeypatch):
 def test_unrecognised_detail_type_is_skipped_not_raised(monkeypatch):
     monkeypatch.setattr("app.push_consumer.push_to_connections", lambda ids, payload: None)
     result = push_consumer_handler(sqs_event("SomethingElse", {}), {})
-    assert result == {"pushed": 0}
+    assert result == {"pushed": 0, "batchItemFailures": []}
+
+
+def test_one_bad_record_does_not_fail_the_whole_batch(monkeypatch):
+    """A KeyError on one malformed record (missing a field push_consumer
+    expects) must not stop the other, genuinely valid records in the same
+    batch from being pushed — and must be reported individually, not left
+    to fail the whole invocation and have SQS retry everything, including
+    the one that already succeeded."""
+    pushed = []
+    monkeypatch.setattr(
+        "app.push_consumer.push_to_connections",
+        lambda ids, payload: pushed.append(payload),
+    )
+    repository.save_connection("conn-1", "user-1", "admin")
+
+    records = [
+        sqs_event("OrderConfirmed", {
+            "order_id": "order-1", "status": "CONFIRMED",
+            "payment_method": "card", "reason": None,
+        }, message_id="msg-good")["Records"][0],
+        sqs_event("OrderConfirmed", {}, message_id="msg-bad")["Records"][0],  # missing order_id
+    ]
+
+    result = push_consumer_handler({"Records": records}, {})
+
+    assert result["pushed"] == 1
+    assert result["batchItemFailures"] == [{"itemIdentifier": "msg-bad"}]
+    assert len(pushed) == 1
+    assert pushed[0]["order_id"] == "order-1"

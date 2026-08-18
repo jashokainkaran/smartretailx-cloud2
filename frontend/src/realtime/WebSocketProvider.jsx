@@ -26,6 +26,16 @@ export function WebSocketProvider({ children }) {
       return;
     }
 
+    // Missing config must degrade to "no live updates" — the same as any
+    // other connection failure — not an unhandled exception. `new
+    // WebSocket("undefined?token=...")` throws synchronously (an invalid
+    // URL, not a connection error), which is a different failure mode from
+    // the reconnect-on-close logic below and would bypass it entirely.
+    if (!import.meta.env.VITE_WS_BASE_URL) {
+      console.warn("VITE_WS_BASE_URL is not configured — real-time updates are disabled.");
+      return;
+    }
+
     let cancelled = false;
     let retryDelayMs = 1000;
 

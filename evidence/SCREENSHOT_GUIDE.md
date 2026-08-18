@@ -400,3 +400,88 @@ one sitting, same rule as §5 and §8.
     strongest version of this shot, also place one that gets declined
     (`tok_test_decline`) so you have both a success and a failure toast to
     choose from.
+
+---
+
+## 11. Delivery tracking, admin analytics, and the third review's fixes (items 65–78)
+
+**Prerequisite — none of this exists on the deployed site yet.** Everything in
+this section was built and tested tonight (2026-08-19) but not yet built into
+new images, pushed, or applied. Before starting, redeploy the same three-step
+way as every other change this session: rebuild and push `order-service`,
+`inventory-service`, and `websocket-service` images (`docker build
+--provenance=false`, push to ECR, `update-function-code` — or let the next
+`terraform apply` pick up the digest change if it's already pinned), then
+`terraform apply -var-file=dev.tfvars` from `terraform/` to pick up
+`EVENT_BUS_NAME`, the `dynamodb:Scan` grant on inventory-api, and
+`ReportBatchItemFailures` on the WebSocket queue. Finish with the frontend
+build/sync/invalidate sequence so the dashboard redesign and the customer
+delivery-status page are actually live. Do the pytest captures (1–5 below)
+first — they don't depend on deployment — then everything from step 6 onward
+in one sitting against the freshly deployed site, same rule as every other
+live-traffic section in this guide.
+
+1. **#65** `tests/10-pytest-order-service-third-audit.png` — in
+   `order-service/`: `./venv/Scripts/python.exe -m pytest -v`. Scroll so
+   `test_a_rejected_delivery_status_entry_is_treated_as_a_failure`,
+   `test_a_rejected_reconciliation_entry_is_treated_as_a_failure`, and
+   `test_order_summary_revenue_excludes_rejected_and_failed` are all visible,
+   plus the `75 passed` summary line.
+2. **#66** `tests/11-pytest-inventory-service-third-audit.png` — in
+   `inventory-service/`, same command. Get
+   `test_a_rejected_entry_is_treated_as_a_failure_not_silent_success` in
+   frame. `35 passed`.
+3. **#67** `tests/12-pytest-websocket-batch-failure.png` — in
+   `websocket-service/`, same command. Get
+   `test_one_bad_record_does_not_fail_the_whole_batch` in frame. `21 passed`.
+4. **#68** `tests/13-pytest-notification-delivery-status.png` — in
+   `notification-service/`, same command. `16 passed`.
+5. **#69** `tests/14-vitest-frontend.png` — in `frontend/`: `npm test`.
+   `9 passed`.
+6. **#70** `terraform/07-plan-remaining-fixes.png` — from `terraform/`:
+   `terraform plan -var-file=dev.tfvars` **before** you apply the fixes above.
+   Capture the plan showing `EVENT_BUS_NAME` appearing on both Lambdas'
+   environment blocks, the new `dynamodb:Scan` IAM statement, and
+   `function_response_types` on the WebSocket event source mapping — then
+   actually run `terraform apply -var-file=dev.tfvars`.
+7. **#71** `iam/04-inventory-scan-grant.png` — IAM console → the
+   inventory-api execution role → inline policy → **{} JSON**. Capture the
+   `dynamodb:Scan` statement and confirm it's scoped to the inventory table's
+   ARN only, not `"*"`.
+8. **#72** `sqs/02-websocket-trigger-partial-batch.png` — Lambda →
+   `smartretailx-dev-websocket-push-consumer` → **Configuration** →
+   **Triggers** → click the SQS trigger → confirm **"Report batch item
+   failures"** is checked, the same shot as #50 but for this queue.
+9. **#73** `events/05-delivery-status-changed-rule.png` — EventBridge →
+   **Rules** → `smartretailx-dev-delivery-status-changed` → **Targets** tab.
+10. **Sign in as admin on the deployed site**, find a `CONFIRMED` or
+    `PENDING_ON_DELIVERY` order in the Customers & Orders page, and set its
+    delivery status to `SHIPPED` (or any non-default value).
+11. **#74** `dynamodb/08-order-delivery-status-set.png` — DynamoDB →
+    `smartretailx-dev-orders` → the order you just updated → expand the JSON
+    — `delivery_status` visible.
+12. **Sign in as the customer who owns that order** (same account used at
+    checkout) and open the Orders page.
+13. **#75** `saga/09-customer-delivery-status-page.png` — the step indicator
+    (Processing → Shipped → Out for delivery → Delivered) on that order card,
+    with the current step highlighted.
+14. **#76** `saga/10-delivery-status-email.png` — the inbox you used as
+    `contact_email` at checkout — the delivery-status email that arrived
+    after step 10, subject and body both visible.
+15. **Stay signed in as admin, go to the Dashboard.**
+16. **#77** `dashboard/01-analytics-panel.png` — capture both the "Today"
+    group (orders, revenue, average order value, payment-method split bar)
+    and the "Operations" group in one crop, or two stitched if they don't fit
+    together at your resolution.
+17. **#78** `dashboard/02-low-stock-card.png` — the "Low stock" card. If
+    nothing is currently low, use the admin stock-adjust endpoint to push one
+    product's `available_quantity` below the threshold (10 by default)
+    first, then refresh the dashboard.
+
+**Not screenshotted, deliberately:** the `FailedEntryCount` rejection-handling
+fix and the missing-`VITE_WS_BASE_URL` guard. Both are real, tested fixes
+(see the two pytest captures above and `IMPLEMENTATION_RECORD.md`'s
+consolidated testing index) but neither produces a state you can point a
+camera at — one only shows up if you deliberately break EventBridge, the
+other is the *absence* of a config value. The passing test is the evidence
+for these two.

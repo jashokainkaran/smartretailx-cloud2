@@ -899,6 +899,25 @@ def test_a_delivery_status_publish_failure_does_not_fail_the_response(calls, mon
     assert response.json()["delivery_status"] == "SHIPPED"
 
 
+def test_a_rejected_delivery_status_entry_is_treated_as_a_failure(calls, monkeypatch):
+    """put_events() can return normally while FailedEntryCount says the one
+    entry inside it was rejected — that must not look like a success."""
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: {
+            "FailedEntryCount": 1,
+            "Entries": [{"ErrorCode": "InternalFailure", "ErrorMessage": "boom"}],
+        },
+    )
+    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+
+    response = client.patch(f"/api/v1/orders/{order_id}/delivery-status", json={"delivery_status": "SHIPPED"})
+
+    assert response.status_code == 200
+    assert response.json()["delivery_status"] == "SHIPPED"
+
+
 def test_admin_order_list_spans_every_customer(calls):
     """The customer-scoped GET /api/v1/orders cannot see across customers —
     this is the deliberately separate, admin-gated capability that can."""
@@ -1039,6 +1058,28 @@ def test_a_reconciliation_publish_failure_does_not_fail_the_response(calls, monk
     assert response.json()["status"] == states.COMPENSATION_FAILED
 
 
+def test_a_rejected_reconciliation_entry_is_treated_as_a_failure(calls, monkeypatch):
+    monkeypatch.setattr(config, "EVENT_BUS_NAME", "test-bus")
+    monkeypatch.setattr(
+        "app.events._events_client.put_events",
+        lambda **kwargs: {
+            "FailedEntryCount": 1,
+            "Entries": [{"ErrorCode": "InternalFailure", "ErrorMessage": "boom"}],
+        },
+    )
+    monkeypatch.setattr(clients, "charge_payment", lambda *a, **k: (_ for _ in ()).throw(
+        DownstreamRejected(402, "Card declined by issuer", {"payment_id": "pay-x"})
+    ))
+    monkeypatch.setattr(clients, "release_stock", lambda items: (_ for _ in ()).throw(
+        DownstreamUnknown("inventory unreachable")
+    ))
+
+    response = client.post("/api/v1/orders", json=basket())
+
+    assert response.status_code == 201
+    assert response.json()["status"] == states.COMPENSATION_FAILED
+
+
 def test_no_reconciliation_publish_attempted_when_event_bus_name_is_unset(calls, monkeypatch):
     monkeypatch.setattr(config, "EVENT_BUS_NAME", None)
     published = []
@@ -1089,8 +1130,13 @@ def test_order_summary_revenue_excludes_rejected_and_failed(calls, monkeypatch):
 
     summary = client.get("/api/v1/orders/admin/summary").json()
 
+    assert summary["total_orders"] == 2
     assert summary["total_revenue"] == "20.00"
-    assert summary["average_order_value"] == "10.00"  # revenue / ALL orders, not just confirmed ones
+    # Average order value is revenue over SUCCESSFUL orders only (1 here,
+    # not 2) — the standard meaning of the term. Diluting it across a
+    # REJECTED order that was never charged would understate it and not
+    # match what the label says.
+    assert summary["average_order_value"] == "20.00"
 
 
 def test_order_summary_with_no_orders_today_is_all_zeroes(calls):

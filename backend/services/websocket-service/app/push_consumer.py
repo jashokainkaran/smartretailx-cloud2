@@ -26,50 +26,63 @@ def handler(event, context):
     fails, loses nothing that matters, since DynamoDB already has the
     correct state and the next normal page load (or the existing
     /orders/stuck query, for reconciliation) shows it.
+
+    The event source mapping has ReportBatchItemFailures enabled, so one
+    bad record in a batch (a JSON parse error, an unrecognised detail-type,
+    a DynamoDB error looking up connections) is reported as that record's
+    own failure rather than left to raise and fail the whole invocation —
+    without this, SQS would retry every message in the batch, including
+    the ones already pushed successfully, showing an admin the same toast
+    twice for one genuinely new event.
     """
     pushed = 0
+    batch_item_failures = []
 
     for record in event.get("Records", []):
-        body = json.loads(record["body"])
-        detail_type = body["detail-type"]
-        data = body["detail"]["data"]
+        try:
+            body = json.loads(record["body"])
+            detail_type = body["detail-type"]
+            data = body["detail"]["data"]
 
-        if detail_type == "StockLevelChanged":
-            connection_ids = repository.all_connections()
-            payload = {
-                "type": "StockUpdated",
-                "product_id": data["product_id"],
-                "available": data["available"],
-                "reserved": data["reserved"],
-            }
-        elif detail_type in ("OrderConfirmed", "OrderFailed"):
-            # Deliberately only the fields the toast needs — not
-            # contact_email/recipient_name, even though this only ever
-            # reaches admin connections.
-            connection_ids = repository.admin_connections()
-            payload = {
-                "type": "OrderResolved",
-                "order_id": data["order_id"],
-                "status": data["status"],
-                "payment_method": data.get("payment_method"),
-                "reason": data.get("reason"),
-            }
-        elif detail_type == "OrderNeedsReconciliation":
-            connection_ids = repository.admin_connections()
-            payload = {
-                "type": "OrderNeedsReconciliation",
-                "order_id": data["order_id"],
-                "reason": data["reason"],
-            }
-        else:
-            logger.warning("Unrecognised detail-type, skipping: %s", detail_type)
-            continue
+            if detail_type == "StockLevelChanged":
+                connection_ids = repository.all_connections()
+                payload = {
+                    "type": "StockUpdated",
+                    "product_id": data["product_id"],
+                    "available": data["available"],
+                    "reserved": data["reserved"],
+                }
+            elif detail_type in ("OrderConfirmed", "OrderFailed"):
+                # Deliberately only the fields the toast needs — not
+                # contact_email/recipient_name, even though this only ever
+                # reaches admin connections.
+                connection_ids = repository.admin_connections()
+                payload = {
+                    "type": "OrderResolved",
+                    "order_id": data["order_id"],
+                    "status": data["status"],
+                    "payment_method": data.get("payment_method"),
+                    "reason": data.get("reason"),
+                }
+            elif detail_type == "OrderNeedsReconciliation":
+                connection_ids = repository.admin_connections()
+                payload = {
+                    "type": "OrderNeedsReconciliation",
+                    "order_id": data["order_id"],
+                    "reason": data["reason"],
+                }
+            else:
+                logger.warning("Unrecognised detail-type, skipping: %s", detail_type)
+                continue
 
-        push_to_connections(connection_ids, payload)
-        pushed += 1
-        logger.info(
-            "Pushed %s to %d connection(s) correlation_id=%s",
-            detail_type, len(connection_ids), data.get("correlation_id"),
-        )
+            push_to_connections(connection_ids, payload)
+            pushed += 1
+            logger.info(
+                "Pushed %s to %d connection(s) correlation_id=%s",
+                detail_type, len(connection_ids), data.get("correlation_id"),
+            )
+        except Exception:
+            logger.exception("Failed to process record messageId=%s", record.get("messageId"))
+            batch_item_failures.append({"itemIdentifier": record["messageId"]})
 
-    return {"pushed": pushed}
+    return {"pushed": pushed, "batchItemFailures": batch_item_failures}

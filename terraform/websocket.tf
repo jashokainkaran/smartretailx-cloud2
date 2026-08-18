@@ -483,4 +483,10 @@ resource "aws_lambda_event_source_mapping" "websocket_push_queue" {
 
   batch_size                         = 10
   maximum_batching_window_in_seconds = 1
+
+  # Without this, one bad record failing the whole invocation means SQS
+  # retries the entire batch — including messages already pushed
+  # successfully, showing an admin a duplicate toast for one genuinely new
+  # event. Same fix Notification's own queue already has.
+  function_response_types = ["ReportBatchItemFailures"]
 }

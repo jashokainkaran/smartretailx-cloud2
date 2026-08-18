@@ -343,6 +343,7 @@ def summarize_orders_since(since_iso: str) -> dict:
     the whole table — not a Scan, and not "every order ever" fetched just
     to filter client-side."""
     total_orders = 0
+    successful_orders = 0
     total_revenue = Decimal("0")
     by_status: dict[str, int] = {}
     by_payment_method: dict[str, int] = {}
@@ -364,6 +365,7 @@ def summarize_orders_since(since_iso: str) -> dict:
             # FAILED order never took money, and counting its total here
             # would overstate what this platform actually earned.
             if status in (states.CONFIRMED, states.PENDING_ON_DELIVERY):
+                successful_orders += 1
                 total_revenue += Decimal(item.get("total", "0"))
         last_key = response.get("LastEvaluatedKey")
         if not last_key:
@@ -373,7 +375,13 @@ def summarize_orders_since(since_iso: str) -> dict:
     return {
         "total_orders": total_orders,
         "total_revenue": str(total_revenue),
-        "average_order_value": str(total_revenue / total_orders) if total_orders else "0",
+        # Revenue over successful orders only — the standard meaning of
+        # "average order value" is the average size of an order that
+        # actually happened, not revenue diluted across every attempt
+        # including ones that were never charged. An earlier version of
+        # this divided by total_orders instead, which understated the
+        # figure and didn't match what the label says.
+        "average_order_value": str(total_revenue / successful_orders) if successful_orders else "0",
         "by_status": by_status,
         "by_payment_method": by_payment_method,
     }
