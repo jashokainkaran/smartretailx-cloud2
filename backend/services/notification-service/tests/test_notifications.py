@@ -220,7 +220,8 @@ def test_send_receipt_delivery_status_changed_mentions_the_status(monkeypatch):
     assert "out for delivery" in text.lower()
     assert "out for delivery" in html_body.lower()
     assert "Hi Priya" in text
-    assert "order-4" in text
+    assert "order-4" not in text
+    assert "order-4" not in html_body
 
 
 def test_send_receipt_delivery_status_changed_handles_an_unmapped_status(monkeypatch):

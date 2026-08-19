@@ -64,7 +64,6 @@ def _receipt_email(data: dict) -> tuple[str, str, str]:
 
     body_html = (
         f"<p>Your order has been confirmed.</p>"
-        f"<p><strong>Order:</strong> {html.escape(data['order_id'])}</p>"
         f"{_items_rows_html(items)}"
         f"<p style='text-align:right;'><strong>Total: {html.escape(data['total'])}</strong></p>"
         f"{payment_note_html}"
@@ -74,7 +73,6 @@ def _receipt_email(data: dict) -> tuple[str, str, str]:
     text_body = (
         f"{greeting}\n\n"
         "Your order has been confirmed.\n\n"
-        f"Order: {data['order_id']}\n\n"
         f"{_items_lines_text(items)}\n\n"
         f"Total: {data['total']}\n\n"
         f"{payment_note_text}\n"
@@ -101,7 +99,6 @@ def _failure_email(data: dict) -> tuple[str, str, str]:
 
     body_html = (
         "<p>We're sorry — your order could not be completed.</p>"
-        f"<p><strong>Order:</strong> {html.escape(data['order_id'])}</p>"
         f"<p><strong>Reason:</strong> {html.escape(reason)}</p>"
         f"{refund_note_html}"
     )
@@ -110,7 +107,6 @@ def _failure_email(data: dict) -> tuple[str, str, str]:
     text_body = (
         f"{greeting}\n\n"
         "We're sorry — your order could not be completed.\n\n"
-        f"Order: {data['order_id']}\n"
         f"Reason: {reason}\n\n"
         f"{refund_note_text}\n"
         "Thanks for shopping with SmartRetailX!\n"
@@ -138,14 +134,12 @@ def _delivery_status_email(data: dict) -> tuple[str, str, str]:
 
     body_html = (
         f"<p>Your order {status_message}.</p>"
-        f"<p><strong>Order:</strong> {html.escape(data['order_id'])}</p>"
     )
     html_body = _wrap_html(greeting, body_html)
 
     text_body = (
         f"{greeting}\n\n"
         f"Your order {status_message}.\n\n"
-        f"Order: {data['order_id']}\n\n"
         "Thanks for shopping with SmartRetailX!\n"
     )
 

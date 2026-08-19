@@ -53,3 +53,11 @@ SIGN_DOWNSTREAM_REQUESTS = os.environ.get("SIGN_DOWNSTREAM_REQUESTS", "false").l
 
 # Used only by isolated pytest runs, which do not have an API Gateway event.
 AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"
+
+# The saga's circuit breaker (app/circuit_breaker.py), one per downstream
+# service (Inventory, Payment). Env-configurable for the same reason
+# DOWNSTREAM_TIMEOUT_SECONDS is above: a tuning knob that may need
+# adjusting after real traffic shows whether it trips too eagerly or not
+# eagerly enough, not a value to bake into code.
+CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3"))
+CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS = float(os.environ.get("CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS", "30"))

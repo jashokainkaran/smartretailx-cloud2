@@ -231,6 +231,25 @@ def test_admin_can_list_orders_across_customers(monkeypatch):
     assert response["statusCode"] == 200
 
 
+def test_customer_cannot_list_ready_to_ship_orders(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_TEST_MODE", False)
+    claims = {"sub": "cust-1", "cognito:groups": "[customers]"}
+    response = handler(
+        lambda_event("GET", "/api/v1/orders/admin/ready-to-ship", claims=claims), {}
+    )
+    assert response["statusCode"] == 403
+    assert detail_of(response) == "Administrator access is required"
+
+
+def test_admin_can_list_ready_to_ship_orders(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_TEST_MODE", False)
+    claims = {"sub": "admin-1", "cognito:groups": "[admin]"}
+    response = handler(
+        lambda_event("GET", "/api/v1/orders/admin/ready-to-ship", claims=claims), {}
+    )
+    assert response["statusCode"] == 200
+
+
 def test_customer_cannot_set_delivery_status(monkeypatch):
     seed_order(customer_id="cust-a")
     monkeypatch.setattr(config, "AUTH_TEST_MODE", False)

@@ -35,7 +35,8 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app import clients, events, repository, states
+from app import circuit_breaker, clients, events, repository, states
+from app.circuit_breaker import CircuitOpenError
 from app.clients import DownstreamRejected, DownstreamUnknown
 from app.correlation import current_correlation_id
 from app.models import Order, OrderCreate, OrderLineItem
@@ -54,6 +55,21 @@ class BasketInvalid(Exception):
     effects — if it fails, nothing happened anywhere and there is nothing
     to audit, so the request is refused at the boundary instead.
     """
+
+
+class BasketPriceChanged(BasketInvalid):
+    """The basket price the customer saw differs from the live catalogue.
+
+    This is not a security decision based on client input: the catalogue
+    remains the price authority. The exception simply stops checkout before
+    any order, stock reservation, or payment attempt, so the customer can
+    explicitly review the new price and decide whether to continue.
+    """
+
+    def __init__(self, changes: list[dict]):
+        self.changes = changes
+        names = ", ".join(change["name"] for change in changes)
+        super().__init__(f"The price changed for: {names}. Refresh your basket and try again.")
 
 
 def _now() -> str:
@@ -89,6 +105,23 @@ def _price_basket(request: OrderCreate):
     if inactive:
         raise BasketInvalid(f"Product(s) no longer for sale: {', '.join(inactive)}")
 
+    price_changes = []
+    for item in request.items:
+        product = catalogue[item.product_id]
+        current_price = Decimal(str(product["price"]))
+        if item.expected_unit_price != current_price:
+            price_changes.append({
+                "product_id": item.product_id,
+                "name": product["name"],
+                "expected_unit_price": _money(item.expected_unit_price),
+                "current_unit_price": _money(current_price),
+            })
+
+    # Do this before an order record is created or any downstream side effect
+    # begins. Retrying after a refresh is therefore safe.
+    if price_changes:
+        raise BasketPriceChanged(price_changes)
+
     line_items = []
     total = Decimal("0.00")
     for item in request.items:
@@ -106,6 +139,11 @@ def _price_basket(request: OrderCreate):
         total += unit_price * item.quantity
 
     return line_items, total
+
+
+def _money(value: Decimal) -> str:
+    """Format a checked price for the customer-facing 409 response."""
+    return f"{value.quantize(Decimal('0.01'))}"
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +210,8 @@ def _compensate_release(order_id, customer_id, contact_email, recipient_name, li
     on time, with COMPENSATION_FAILED as the fallback it would still need.
     """
     try:
-        clients.release_stock(line_items)
-    except (DownstreamRejected, DownstreamUnknown) as exc:
+        circuit_breaker.guarded("inventory", clients.release_stock, line_items)
+    except (DownstreamRejected, DownstreamUnknown, CircuitOpenError) as exc:
         # The compensation itself failed. The customer has no goods and no
         # charge, but stock is stranded in `reserved` where nobody can buy
         # it. Surface it loudly rather than absorbing it (ADR-035).
@@ -225,8 +263,8 @@ def _compensate_refund(order_id, customer_id, contact_email, recipient_name, lin
     a retry here cannot double-refund.
     """
     try:
-        clients.refund_payment(payment_id)
-    except (DownstreamRejected, DownstreamUnknown) as exc:
+        circuit_breaker.guarded("payment", clients.refund_payment, payment_id)
+    except (DownstreamRejected, DownstreamUnknown, CircuitOpenError) as exc:
         # The worst outcome in the system: the customer has been charged
         # and will not receive goods. Terminal, alarmed, and resolved by a
         # human (ADR-035).
@@ -285,9 +323,14 @@ def _confirm_cash_on_delivery(order_id: str, customer_id: str, contact_email: st
     """
     repository.set_status(order_id, states.RESERVING_STOCK, states.CONFIRMING_STOCK)
     try:
-        clients.confirm_stock(line_items)
-    except DownstreamRejected as exc:
-        reason = str(exc.detail)
+        circuit_breaker.guarded("inventory", clients.confirm_stock, line_items)
+    except (DownstreamRejected, CircuitOpenError) as exc:
+        # A CircuitOpenError means confirm was never even attempted — the
+        # breaker knows Inventory is unhealthy and skipped the call. That is
+        # still a known, certain outcome (nothing was confirmed), not an
+        # uncertain one, so it belongs in this branch alongside a genuine
+        # rejection — not in the DownstreamUnknown branch below.
+        reason = str(exc.detail) if isinstance(exc, DownstreamRejected) else f"inventory service temporarily unavailable: {exc}"
         logger.info(
             "order failed order_id=%s reason=%s (cash on delivery, nothing charged) correlation_id=%s",
             order_id, reason, current_correlation_id(),
@@ -441,11 +484,17 @@ def run_checkout(request: OrderCreate):
     # --- Step 1: reserve stock, all-or-nothing --------------------------
     repository.set_status(order_id, states.PENDING, states.RESERVING_STOCK)
     try:
-        clients.reserve_stock(line_items)
+        circuit_breaker.guarded("inventory", clients.reserve_stock, line_items)
     except DownstreamRejected as exc:
         # 409 — at least one line is short. The transaction guarantees
         # nothing at all was reserved, so there is nothing to undo.
         return _reject(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, order.payment_method, line_items, str(exc.detail))
+    except CircuitOpenError as exc:
+        # The breaker skipped the call — nothing was reserved, exactly like
+        # the rejection above, just for a different reason. This is a
+        # certain outcome, not an unknown one: no ambiguity about whether
+        # the call landed, because it was never sent.
+        return _reject(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, order.payment_method, line_items, f"inventory service temporarily unavailable: {exc}")
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.RESERVING_STOCK, str(exc))
 
@@ -459,7 +508,7 @@ def run_checkout(request: OrderCreate):
     # --- Step 2: take payment -------------------------------------------
     repository.set_status(order_id, states.RESERVING_STOCK, states.TAKING_PAYMENT)
     try:
-        payment = clients.charge_payment(order_id, total, request.payment_token)
+        payment = circuit_breaker.guarded("payment", clients.charge_payment, order_id, total, request.payment_token)
     except DownstreamRejected as exc:
         # 402 — declined. The Payment service returns the full Payment
         # record on a decline rather than an error envelope, so payment_id
@@ -474,6 +523,15 @@ def run_checkout(request: OrderCreate):
             order_id, customer_id, order.contact_email, order.shipping_address.recipient_name,
             line_items, declined_reason, declined_payment_id
         )
+    except CircuitOpenError as exc:
+        # The breaker skipped the call — Payment was never reached, so
+        # nothing was charged. Certain, not unknown: release the stock
+        # reserved in step 1 and fail cleanly, the same shape as a decline
+        # just above, with no payment_id since no attempt was made.
+        return _compensate_release(
+            order_id, customer_id, order.contact_email, order.shipping_address.recipient_name,
+            line_items, f"payment service temporarily unavailable: {exc}", None
+        )
     except DownstreamUnknown as exc:
         return _payment_unknown(order_id, str(exc))
 
@@ -484,9 +542,14 @@ def run_checkout(request: OrderCreate):
         order_id, states.TAKING_PAYMENT, states.CONFIRMING_STOCK, payment_id=payment_id
     )
     try:
-        clients.confirm_stock(line_items)
+        circuit_breaker.guarded("inventory", clients.confirm_stock, line_items)
     except DownstreamRejected as exc:
         return _compensate_refund(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, line_items, payment_id, str(exc.detail))
+    except CircuitOpenError as exc:
+        # Confirm was skipped, not attempted — but payment WAS already
+        # taken in step 2, so this is certain, not unknown: refund it and
+        # fail, exactly like a definite confirm rejection just above.
+        return _compensate_refund(order_id, customer_id, order.contact_email, order.shipping_address.recipient_name, line_items, payment_id, f"inventory service temporarily unavailable: {exc}")
     except DownstreamUnknown as exc:
         return _stock_unknown(order_id, states.CONFIRMING_STOCK, str(exc), payment_id)
 

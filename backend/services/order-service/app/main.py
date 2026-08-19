@@ -14,7 +14,7 @@ from app.auth import claims_from_request, groups, require_admin, require_custome
 from app.clients import DownstreamUnknown
 from app.correlation import correlation_id_from_request, correlation_middleware
 from app.models import DeliveryStatusUpdate, Order, OrderCreate, OrderPage, OrderSummary
-from app.saga import BasketInvalid
+from app.saga import BasketInvalid, BasketPriceChanged
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,6 +78,18 @@ def create_order(order_request: OrderCreate, claims: dict = Depends(require_cust
         trusted_customer_id = order_request.customer_id if config.AUTH_TEST_MODE else claims["sub"]
         trusted_request = order_request.model_copy(update={"customer_id": trusted_customer_id})
         return saga.run_checkout(trusted_request)
+    except BasketPriceChanged as exc:
+        # A price comparison happens before the order row, stock reservation
+        # and payment attempt. The structured details let the storefront
+        # refresh only the affected basket lines and retry safely.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PRICE_CHANGED",
+                "message": str(exc),
+                "changes": exc.changes,
+            },
+        )
     except BasketInvalid as exc:
         # 409 rather than 400: the request was well-formed, but the world
         # changed underneath it — the product was withdrawn or removed
@@ -160,6 +172,20 @@ def order_summary(_claims: dict = Depends(require_admin)):
     """
     since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     return repository.summarize_orders_since(since)
+
+
+@app.get("/api/v1/orders/admin/ready-to-ship", response_model=list[Order])
+def ready_to_ship_orders(
+    limit: int = Query(default=5, le=20, ge=1),
+    _claims: dict = Depends(require_admin),
+):
+    """Confirmed orders awaiting their first fulfilment-status update.
+
+    This deliberately means CONFIRMED or cash-on-delivery PENDING_ON_DELIVERY
+    orders with no delivery_status yet.  Once an administrator sets
+    PROCESSING, SHIPPED, OUT_FOR_DELIVERY or DELIVERED, it leaves this list.
+    """
+    return repository.list_orders_ready_to_ship(limit=limit)
 
 
 @app.get("/api/v1/orders/{order_id}", response_model=Order)

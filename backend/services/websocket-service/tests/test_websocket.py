@@ -190,13 +190,13 @@ def test_disconnect_removes_the_connection():
 # push_consumer: routes each event type to the right audience
 # ---------------------------------------------------------------------------
 
-def sqs_event(detail_type, data, message_id="msg-1"):
+def sqs_event(detail_type, data, message_id="msg-1", event_id="event-1"):
     return {
         "Records": [{
             "messageId": message_id,
             "body": __import__("json").dumps({
                 "detail-type": detail_type,
-                "detail": {"data": data},
+                "detail": {"event_id": event_id, "data": data},
             })
         }]
     }
@@ -243,7 +243,7 @@ def test_order_confirmed_pushes_to_admins_only(monkeypatch):
     ids, payload = pushed[0]
     assert ids == ["conn-2"]
     assert payload == {
-        "type": "OrderResolved", "order_id": "order-1",
+        "type": "OrderResolved", "event_id": "event-1", "order_id": "order-1",
         "status": "CONFIRMED", "payment_method": "card", "reason": None,
     }
 
@@ -270,6 +270,7 @@ def test_order_failed_pushes_to_admins_only(monkeypatch):
     ids, payload = pushed[0]
     assert ids == ["conn-2"]
     assert payload["type"] == "OrderResolved"
+    assert payload["event_id"] == "event-1"
     assert payload["status"] == "REJECTED"
     assert payload["reason"] == "Insufficient stock for: p1"
 
@@ -296,7 +297,35 @@ def test_order_needs_reconciliation_pushes_to_admins_only(monkeypatch):
     ids, payload = pushed[0]
     assert ids == ["conn-2"]
     assert payload["type"] == "OrderNeedsReconciliation"
+    assert payload["event_id"] == "event-1"
     assert payload["order_id"] == "order-3"
+
+
+def test_delivery_status_change_pushes_to_admins_only(monkeypatch):
+    pushed = []
+    monkeypatch.setattr(
+        "app.push_consumer.push_to_connections",
+        lambda ids, payload: pushed.append((ids, payload)),
+    )
+    repository.save_connection("conn-1", "user-1", "customer")
+    repository.save_connection("conn-2", "user-2", "admin")
+
+    result = push_consumer_handler(
+        sqs_event("DeliveryStatusChanged", {
+            "order_id": "order-4",
+            "delivery_status": "SHIPPED",
+        }),
+        {},
+    )
+
+    assert result == {"pushed": 1, "batchItemFailures": []}
+    ids, payload = pushed[0]
+    assert ids == ["conn-2"]
+    assert payload == {
+        "type": "DeliveryStatusChanged", "event_id": "event-1",
+        "order_id": "order-4",
+        "delivery_status": "SHIPPED",
+    }
 
 
 def test_unrecognised_detail_type_is_skipped_not_raised(monkeypatch):

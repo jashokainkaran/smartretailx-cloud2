@@ -9,7 +9,7 @@ logger.setLevel(logging.INFO)
 
 
 def handler(event, context):
-    """SQS-triggered Lambda. Consumes four event types routed here by
+    """SQS-triggered Lambda. Consumes five event types routed here by
     EventBridge, and pushes a live update to the relevant open WebSocket
     connections:
 
@@ -19,8 +19,10 @@ def handler(event, context):
       the admin dashboard shows the moment an order resolves.
     - OrderNeedsReconciliation (Order) -> admin connections only, the
       COMPENSATION_FAILED case that otherwise publishes no event at all.
+    - DeliveryStatusChanged (Order) -> admin connections only, so the
+      ready-to-ship card stays current in every open admin dashboard.
 
-    All four are published best-effort by their source service — not
+    All five are published best-effort by their source service — not
     through a transactional outbox — so this consumer makes no durability
     promise either: a message that never arrives here, or a push that
     fails, loses nothing that matters, since DynamoDB already has the
@@ -42,7 +44,9 @@ def handler(event, context):
         try:
             body = json.loads(record["body"])
             detail_type = body["detail-type"]
-            data = body["detail"]["data"]
+            detail = body["detail"]
+            data = detail["data"]
+            event_id = detail.get("event_id")
 
             if detail_type == "StockLevelChanged":
                 connection_ids = repository.all_connections()
@@ -59,6 +63,7 @@ def handler(event, context):
                 connection_ids = repository.admin_connections()
                 payload = {
                     "type": "OrderResolved",
+                    "event_id": event_id,
                     "order_id": data["order_id"],
                     "status": data["status"],
                     "payment_method": data.get("payment_method"),
@@ -68,8 +73,17 @@ def handler(event, context):
                 connection_ids = repository.admin_connections()
                 payload = {
                     "type": "OrderNeedsReconciliation",
+                    "event_id": event_id,
                     "order_id": data["order_id"],
                     "reason": data["reason"],
+                }
+            elif detail_type == "DeliveryStatusChanged":
+                connection_ids = repository.admin_connections()
+                payload = {
+                    "type": "DeliveryStatusChanged",
+                    "event_id": event_id,
+                    "order_id": data["order_id"],
+                    "delivery_status": data["delivery_status"],
                 }
             else:
                 logger.warning("Unrecognised detail-type, skipping: %s", detail_type)

@@ -335,6 +335,42 @@ def list_all_orders(limit: int = 20, cursor: dict | None = None):
     return response.get("Items", []), response.get("LastEvaluatedKey")
 
 
+def list_orders_ready_to_ship(limit: int = 5):
+    """Return the newest confirmed orders that fulfilment has not started.
+
+    DynamoDB has no delivery-status index in this small deployment.  Rather
+    than add a Scan or introduce a migration/backfill for an index solely for
+    this dashboard card, read the existing all-orders-index newest-first and
+    stop as soon as the requested number is found.  This is bounded and
+    suitable for the development dataset; a production system with a large
+    order history should use a dedicated sparse ready-to-ship index.
+    """
+    ready = []
+    kwargs = {
+        "IndexName": "all-orders-index",
+        "KeyConditionExpression": Key("order_bucket").eq("ALL"),
+        "ScanIndexForward": False,
+    }
+
+    while len(ready) < limit:
+        response = table.query(**kwargs)
+        for item in response.get("Items", []):
+            if (
+                item.get("status") in (states.CONFIRMED, states.PENDING_ON_DELIVERY)
+                and not item.get("delivery_status")
+            ):
+                ready.append(item)
+                if len(ready) == limit:
+                    break
+
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        kwargs["ExclusiveStartKey"] = last_key
+
+    return ready
+
+
 def summarize_orders_since(since_iso: str) -> dict:
     """Aggregate every order from `since_iso` onward — the admin dashboard's
     analytics panel. Same all-orders-index Query list_all_orders() uses,

@@ -39,15 +39,20 @@ class OrderItemRequest(BaseModel):
     """
     One basket line, as the CLIENT sends it.
 
-    Deliberately carries NO price. If the browser supplied unit_price,
-    anyone with developer tools open could buy a television for a penny.
-    The Order service fetches the price from the Product Catalogue itself
-    and snapshots it into OrderLineItem below. Trusting a client-supplied
-    price is one of the most common real-world checkout vulnerabilities,
-    and the shape of this model is what makes it impossible here.
+    ``expected_unit_price`` is the price the customer SAW when adding an
+    item to their basket. It is never trusted as the charge amount: the
+    Order service still obtains the current authoritative price from the
+    Product Catalogue. It lets checkout stop with a clear 409 when those
+    two values differ, instead of silently charging a changed price.
+
+    In contrast, ``unit_price`` is deliberately not accepted as a charge
+    instruction. The server snapshots its own catalogue price into
+    OrderLineItem below; developer tools cannot turn a television into a
+    one-penny purchase by changing this request.
     """
     product_id: str
     quantity: int = Field(..., gt=0)
+    expected_unit_price: Decimal = Field(..., gt=0, max_digits=12, decimal_places=2)
 
 
 class ShippingAddress(BaseModel):

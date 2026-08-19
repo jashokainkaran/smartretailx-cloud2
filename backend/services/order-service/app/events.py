@@ -39,6 +39,10 @@ def publish_needs_reconciliation(order_id: str, reason: str, payment_id: str | N
             "DetailType": "OrderNeedsReconciliation",
             "EventBusName": config.EVENT_BUS_NAME,
             "Detail": json.dumps({
+                # This direct event has no outbox record. It still needs a
+                # stable ID so WebSocket clients can discard a redelivery of
+                # this exact EventBridge message.
+                "event_id": str(uuid.uuid4()),
                 "data": {
                     "order_id": order_id,
                     "reason": reason,

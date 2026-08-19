@@ -7,6 +7,7 @@ os.environ["DYNAMODB_ENDPOINT"] = "http://localhost:8000"
 os.environ["AUTH_TEST_MODE"] = "true"
 
 import json
+import time
 from decimal import Decimal
 
 import boto3
@@ -14,7 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app import config, clients, states
+from app import circuit_breaker, config, clients, states
+from app.circuit_breaker import CircuitOpenError
 from app.clients import DownstreamRejected, DownstreamUnknown
 
 client = TestClient(app)
@@ -108,6 +110,22 @@ class Calls:
         self.refunded = 0
 
 
+@pytest.fixture(autouse=True)
+def clean_circuit_breakers():
+    """
+    Circuit breaker state lives in module-level memory (app/circuit_breaker.py),
+    shared across every test in this process — without this, a test that
+    trips a breaker (e.g. by raising DownstreamUnknown from a mocked client)
+    would leave it OPEN for whatever test happens to run next, regardless of
+    whether that test has anything to do with circuit breaking. Autouse so
+    every test in this file gets a clean CLOSED breaker, not just the ones
+    that know to ask for it.
+    """
+    circuit_breaker.reset_all()
+    yield
+    circuit_breaker.reset_all()
+
+
 @pytest.fixture
 def calls(monkeypatch):
     """
@@ -165,6 +183,19 @@ def basket(items=None, customer_id="cust-1", token="tok_test_ok", payment_method
     # deliberate test input, not a missing argument.
     if items is None:
         items = [{"product_id": "p1", "quantity": 2}]
+    # A browser now sends the price it showed the customer. The order service
+    # compares it with the authoritative catalogue price before any side
+    # effect. Keep older test bodies concise while making every normal basket
+    # represent the current displayed catalogue state.
+    items = [
+        {
+            **item,
+            "expected_unit_price": item.get(
+                "expected_unit_price", CATALOGUE.get(item["product_id"], {"price": "0.01"})["price"]
+            ),
+        }
+        for item in items
+    ]
     payload = {
         "customer_id": customer_id,
         "items": items,
@@ -257,6 +288,40 @@ def test_client_supplied_price_is_ignored(calls):
     response = client.post("/api/v1/orders", json=payload)
     assert response.status_code == 201
     assert response.json()["total"] == "20.00"     # 2 x 10.00, not 2 x 0.01
+
+
+def test_price_change_stops_checkout_before_any_order_or_side_effect(calls, monkeypatch):
+    """A changed catalogue price requires explicit customer acknowledgement."""
+    updated_catalogue = {**CATALOGUE, "p1": {**CATALOGUE["p1"], "price": "12.00"}}
+    monkeypatch.setattr(
+        clients,
+        "fetch_products",
+        lambda product_ids: {pid: updated_catalogue[pid] for pid in product_ids if pid in updated_catalogue},
+    )
+
+    response = client.post("/api/v1/orders", json=basket())
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "PRICE_CHANGED"
+    assert detail["changes"] == [{
+        "product_id": "p1",
+        "name": "Widget",
+        "expected_unit_price": "10.00",
+        "current_unit_price": "12.00",
+    }]
+    assert (calls.reserved, calls.charged, calls.confirmed) == (0, 0, 0)
+    assert outbox_records() == []
+
+
+def test_checkout_requires_the_price_customer_saw(calls):
+    payload = basket()
+    del payload["items"][0]["expected_unit_price"]
+
+    response = client.post("/api/v1/orders", json=payload)
+
+    assert response.status_code == 422
+    assert calls.reserved == 0
 
 
 def test_confirmed_order_publishes_an_outbox_event(calls):
@@ -391,6 +456,102 @@ def test_reserve_timeout_records_stock_unknown(calls, monkeypatch):
 
     # No event — nothing downstream should act on an undetermined outcome.
     assert outbox_records() == []
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker: forward-path handling when a breaker is already open
+# ---------------------------------------------------------------------------
+# Breaker-internals tests (trip/reset/half-open) live in
+# test_circuit_breaker.py. These are saga-integration tests proving the
+# corrected exception handling: a skipped call is a CERTAIN outcome (nothing
+# was sent, so nothing could have happened), not an uncertain one, and must
+# not be routed into the same STOCK_UNKNOWN/PAYMENT_UNKNOWN branches as a
+# genuine DownstreamUnknown — that was the bug an earlier version of
+# CircuitOpenError had, by being a DownstreamUnknown subclass.
+
+def _trip_breaker(service: str):
+    breaker = circuit_breaker._breaker_for(service)
+    breaker.state = "OPEN"
+    breaker.opened_at = time.monotonic()
+
+
+def test_open_inventory_breaker_before_reserve_rejects_cleanly_not_as_unknown(calls):
+    """
+    The breaker skips reserve_stock entirely — nothing was reserved, the
+    same certain outcome as a definite 409. Must become REJECTED, not
+    STOCK_UNKNOWN: there is nothing uncertain here to reconcile.
+    """
+    _trip_breaker("inventory")
+
+    body = client.post("/api/v1/orders", json=basket()).json()
+    assert body["status"] == states.REJECTED
+    assert "inventory service temporarily unavailable" in body["failure_reason"]
+
+    # The underlying client function was never invoked at all.
+    assert calls.reserved == 0
+    assert calls.released == 0
+    assert calls.charged == 0
+
+
+def test_open_payment_breaker_before_charge_releases_stock_not_payment_unknown(calls):
+    """
+    Stock WAS reserved in step 1. The breaker then skips charge_payment
+    entirely — certain that nothing was charged — so the correct action is
+    to release the reservation and fail cleanly, exactly like a card
+    decline. Must NOT leave the order as PAYMENT_UNKNOWN with stock
+    stranded in `reserved` for no reason: there is no uncertainty to guard
+    against here.
+    """
+    _trip_breaker("payment")
+
+    body = client.post("/api/v1/orders", json=basket()).json()
+    assert body["status"] == states.FAILED
+    assert "payment service temporarily unavailable" in body["failure_reason"]
+    assert body["payment_id"] is None  # no attempt was made, so no id exists
+
+    assert calls.reserved == 1
+    assert calls.charged == 0
+    assert calls.released == 1  # the stock reserved in step 1 IS released
+
+
+def test_open_inventory_breaker_before_confirm_refunds_not_stock_unknown(calls, monkeypatch):
+    """
+    Payment WAS taken in step 2. The inventory breaker is open specifically
+    for confirm_stock (step 3), not reserve_stock (step 1) — both go
+    through the same "inventory" breaker, so simply pre-tripping it would
+    make step 1 fail too, and setting it via a side effect inside
+    reserve_stock does not survive either: guarded()'s own on_success()
+    closes it again right after reserve_stock returns normally, since it
+    is the same breaker object. Instead, guarded() itself is wrapped so
+    only the SECOND "inventory" call (confirm, not reserve) sees it open —
+    a call-count fake, not the real trip mechanism, because what is under
+    test here is saga.py's exception handling, not the breaker's own state
+    machine (that is test_circuit_breaker.py's job).
+
+    Certain that nothing was confirmed, so the correct action is to refund
+    the payment taken in step 2 and fail — not leave the order as
+    STOCK_UNKNOWN with money taken and no resolution in sight.
+    """
+    real_guarded = circuit_breaker.guarded
+    inventory_calls = {"count": 0}
+
+    def guarded_confirm_open(service, fn, *args, **kwargs):
+        if service == "inventory":
+            inventory_calls["count"] += 1
+            if inventory_calls["count"] == 2:  # 1st = reserve, 2nd = confirm
+                raise CircuitOpenError("circuit open for inventory, call skipped")
+        return real_guarded(service, fn, *args, **kwargs)
+
+    monkeypatch.setattr(circuit_breaker, "guarded", guarded_confirm_open)
+
+    body = client.post("/api/v1/orders", json=basket()).json()
+    assert body["status"] == states.FAILED
+    assert "inventory service temporarily unavailable" in body["failure_reason"]
+
+    assert calls.reserved == 1
+    assert calls.charged == 1
+    assert calls.confirmed == 0  # confirm_stock itself was never invoked
+    assert calls.refunded == 1   # the payment taken in step 2 IS refunded
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +983,24 @@ def test_delivery_status_can_be_set_on_a_cash_on_delivery_order(calls):
     assert response.json()["delivery_status"] == "OUT_FOR_DELIVERY"
 
 
+def test_ready_to_ship_lists_only_confirmed_orders_without_delivery_status(calls):
+    card_order = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+    cod_order = client.post(
+        "/api/v1/orders", json=basket(payment_method="cash_on_delivery")
+    ).json()["order_id"]
+    client.patch(
+        f"/api/v1/orders/{card_order}/delivery-status",
+        json={"delivery_status": "PROCESSING"},
+    )
+
+    response = client.get("/api/v1/orders/admin/ready-to-ship?limit=5")
+
+    assert response.status_code == 200
+    assert [order["order_id"] for order in response.json()] == [cod_order]
+    assert response.json()[0]["status"] == states.PENDING_ON_DELIVERY
+    assert response.json()[0]["delivery_status"] is None
+
+
 def test_delivery_status_rejected_on_a_non_confirmed_order(calls, monkeypatch):
     """A REJECTED order has nothing to ship — the conditional guard in
     repository.set_delivery_status must refuse it, not just the frontend."""
@@ -995,7 +1174,9 @@ def test_compensation_failure_publishes_needs_reconciliation(calls, monkeypatch)
     entry = published[0]["Entries"][0]
     assert entry["Source"] == "smartretailx.orders"
     assert entry["DetailType"] == "OrderNeedsReconciliation"
-    data = json.loads(entry["Detail"])["data"]
+    detail = json.loads(entry["Detail"])
+    assert "event_id" in detail
+    data = detail["data"]
     assert data["order_id"] == order_id
     assert "release failed" in data["reason"]
     assert "correlation_id" in data
