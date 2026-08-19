@@ -256,11 +256,20 @@ resource "aws_iam_role_policy" "notification_service" {
           "ses:SendEmail",
           "ses:SendRawEmail",
         ]
-        # Scoped to the one sender identity this service is allowed to send
-        # as — not "*". A compromised function credential could still only
-        # send as this one already-public-facing address, not spoof anyone
-        # else SES might have verified in this account later.
-        Resource = aws_ses_email_identity.sender.arn
+        # SES evaluates a sandbox recipient's verified identity as well as
+        # the sender identity. Restricting Resource to the sender ARN alone
+        # therefore rejects every different verified customer recipient.
+        # Resource must be "*" for this send action, with ses:FromAddress
+        # enforcing the real least-privilege boundary: this Lambda can send
+        # only FROM the one SmartRetailX sender, never impersonate another
+        # SES identity. SES itself still rejects unverified recipients while
+        # the account is in its sandbox.
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ses:FromAddress" = var.notification_sender_email
+          }
+        }
       },
       local.xray_statement,
     ]

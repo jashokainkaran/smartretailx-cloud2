@@ -447,6 +447,15 @@ locals {
         # config.EVENT_BUS_NAME: return" guard — a real gap this project
         # shipped with initially and caught on later review.
         EVENT_BUS_NAME = aws_cloudwatch_event_bus.main.name
+
+        # The saga's circuit breaker (app/circuit_breaker.py). Set here
+        # explicitly, matching the values already baked into config.py's own
+        # defaults, so that tuning these later means an HCL change reviewed
+        # through the normal apply, not an ad-hoc console edit to Lambda's
+        # environment that terraform plan would then silently fight or, if
+        # apply is never re-run, leave unnoticed as drift.
+        CIRCUIT_BREAKER_FAILURE_THRESHOLD     = "3"
+        CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS = "30"
       }
     }
   }

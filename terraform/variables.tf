@@ -31,3 +31,21 @@ variable "notification_sender_email" {
   description = "The email address the Notification service sends receipts from. Must be verified in SES — AWS sends a confirmation link to this address that must be clicked before sending will work. While the SES account is in sandbox mode, the recipient of any test send must also be a verified address."
   type        = string
 }
+
+variable "billing_alert_email" {
+  description = "Email address for AWS Budget and CloudWatch alarm notifications. Defaults to notification_sender_email when omitted, but can be set separately in dev.tfvars."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "monthly_budget_limit_usd" {
+  description = "Monthly AWS account-cost alert threshold in USD. This is an alerting guardrail, not an automatic spending cap."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.monthly_budget_limit_usd > 0
+    error_message = "monthly_budget_limit_usd must be greater than zero."
+  }
+}

@@ -27,6 +27,22 @@ resource "aws_cognito_user_pool" "main" {
   username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
 
+  # Users can opt into a six-digit authenticator-app code (TOTP). It is
+  # optional so existing accounts can still sign in while the Profile page is
+  # introduced. We deliberately do not enable SMS MFA: it has message costs.
+  mfa_configuration = "OPTIONAL"
+
+  software_token_mfa_configuration {
+    enabled = true
+  }
+
+  # If a user changes the email they use to sign in, keep their verified
+  # current address active until they prove ownership of the replacement.
+  # This prevents an accidental typo from locking them out of the application.
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
+
   # Cognito invokes this only after a person has verified a self-service
   # registration. The Lambda assigns the customers group, never admin.
   lambda_config {
@@ -47,10 +63,8 @@ resource "aws_cognito_user_pool" "main" {
       admin_create_user_config,
       device_configuration,
       email_configuration,
-      mfa_configuration,
       password_policy,
       schema,
-      user_attribute_update_settings,
       user_pool_add_ons,
       username_configuration,
       verification_message_template,
@@ -69,13 +83,20 @@ resource "aws_cognito_user_pool_client" "web" {
   generate_secret                      = false
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_flows                  = ["code"]
-  allowed_oauth_scopes                 = ["openid", "email", "profile"]
-  callback_urls                        = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}"])
-  logout_urls                          = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}"])
-  supported_identity_providers         = ["COGNITO"]
-  prevent_user_existence_errors        = "ENABLED"
-  enable_token_revocation              = true
-  explicit_auth_flows                  = ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_AUTH", "ALLOW_USER_SRP_AUTH"]
+  # The final scope authorizes a signed-in user to change only their own
+  # Cognito profile, password and MFA preference from the future Profile page.
+  allowed_oauth_scopes = [
+    "openid",
+    "email",
+    "profile",
+    "aws.cognito.signin.user.admin",
+  ]
+  callback_urls                 = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}"])
+  logout_urls                   = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}"])
+  supported_identity_providers  = ["COGNITO"]
+  prevent_user_existence_errors = "ENABLED"
+  enable_token_revocation       = true
+  explicit_auth_flows           = ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_AUTH", "ALLOW_USER_SRP_AUTH"]
 
   # Match the existing client settings exactly; this avoids Terraform removing
   # the explicit unit labels even though their effective values are unchanged.

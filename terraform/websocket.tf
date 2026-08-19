@@ -293,6 +293,15 @@ resource "aws_cloudwatch_event_target" "order_failed_to_push" {
   arn            = aws_sqs_queue.websocket_push.arn
 }
 
+# Reuse the delivery-status rule owned by notification_service.tf. The same
+# event continues to send a customer email and now also tells open admin
+# dashboards to refresh their ready-to-ship list.
+resource "aws_cloudwatch_event_target" "delivery_status_changed_to_push" {
+  rule           = aws_cloudwatch_event_rule.delivery_status_changed.name
+  event_bus_name = aws_cloudwatch_event_bus.main.name
+  arn            = aws_sqs_queue.websocket_push.arn
+}
+
 # The one genuinely new event type: fires only on COMPENSATION_FAILED
 # (saga.py's two compensation-failure branches), which otherwise publishes
 # no event at all — the admin dashboard is the only place this becomes
@@ -320,7 +329,7 @@ resource "aws_cloudwatch_event_target" "order_needs_reconciliation_to_push" {
   arn            = aws_sqs_queue.websocket_push.arn
 }
 
-# One policy resource, four statements — same reason as notification_service.tf:
+# One policy resource, five statements — same reason as notification_service.tf:
 # a second aws_sqs_queue_policy on the same queue would overwrite this one,
 # and a single ArnEquals condition only takes one value. order_confirmed and
 # order_failed are the SAME rule objects notification_service.tf already
@@ -377,6 +386,18 @@ resource "aws_sqs_queue_policy" "websocket_push" {
         Condition = {
           ArnEquals = {
             "aws:SourceArn" = aws_cloudwatch_event_rule.order_needs_reconciliation.arn
+          }
+        }
+      },
+      {
+        Sid       = "AllowDeliveryStatusChangedToPush"
+        Effect    = "Allow"
+        Principal = { Service = "events.amazonaws.com" }
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.websocket_push.arn
+        Condition = {
+          ArnEquals = {
+            "aws:SourceArn" = aws_cloudwatch_event_rule.delivery_status_changed.arn
           }
         }
       },
