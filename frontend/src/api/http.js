@@ -6,10 +6,11 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again.";
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, details = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -55,12 +56,12 @@ export async function request(path, { method = "GET", body, idToken } = {}) {
       signalSessionExpired();
       throw new ApiError(SESSION_EXPIRED_MESSAGE, 401);
     }
-    const detail = typeof payload === "object" && payload?.detail
-      ? payload.detail
-      : `Request failed (${response.status}).`;
-    throw new ApiError(detail, response.status);
+    const detail = typeof payload === "object" && payload?.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : detail?.message || `Request failed (${response.status}).`;
+    throw new ApiError(message, response.status, typeof detail === "object" ? detail : null);
   }
 
   return payload;
 }
-

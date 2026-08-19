@@ -13,9 +13,13 @@ import AccessDenied from "./components/AccessDenied.jsx";
 import NotFound from "./components/NotFound.jsx";
 import Toast from "./components/Toast.jsx";
 import { consumeReturnRoute } from "./lib/checkoutDraft.js";
+import { fetchProductById } from "./api/products.js";
+import { fetchCognitoProfile } from "./auth/cognitoUser.js";
+import CompleteProfilePage from "./components/CompleteProfilePage.jsx";
+import ProfilePage from "./components/ProfilePage.jsx";
 
 const CART_KEY = "smartretailx.cart";
-const KNOWN_ROUTES = ["catalogue", "cart", "orders", "admin", "dashboard", "customers"];
+const KNOWN_ROUTES = ["catalogue", "cart", "orders", "admin", "dashboard", "customers", "profile", "complete-profile"];
 
 const PAGE_TITLES = {
   catalogue: "Shop",
@@ -24,28 +28,42 @@ const PAGE_TITLES = {
   dashboard: "Dashboard",
   admin: "Products & orders",
   customers: "Customers & orders",
+  profile: "My Profile",
+  "complete-profile": "Complete your profile",
   notfound: "Page not found",
 };
 
 // Distinct from "no hash yet" (a fresh landing, defaults to the shop) —
 // an actual unrecognised hash (a stale bookmark, a typo) gets its own
 // "Page not found" state instead of silently pretending nothing's wrong.
-function routeFromHash() {
-  const route = window.location.hash.replace("#", "");
-  if (!route) return "catalogue";
+function routeFromLocation() {
+  // Legacy hash links remain usable, but new navigation writes real browser
+  // paths. CloudFront already rewrites 403/404 SPA paths to index.html.
+  const legacyRoute = window.location.hash.replace("#", "");
+  if (legacyRoute) return KNOWN_ROUTES.includes(legacyRoute) ? legacyRoute : "notfound";
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  if (path === "/") return "catalogue";
+  const route = path.slice(1);
   return KNOWN_ROUTES.includes(route) ? route : "notfound";
+}
+
+function pathForRoute(route) {
+  return route === "catalogue" ? "/" : `/${route}`;
 }
 
 export default function App() {
   const [selectedProductId, setSelectedProductId] = useState(null);
-  const [route, setRoute] = useState(routeFromHash);
+  const [route, setRoute] = useState(routeFromLocation);
   const [cart, setCart] = useState(() => {
     try { return JSON.parse(window.localStorage.getItem(CART_KEY)) || []; }
     catch { return []; }
   });
   const [latestOrder, setLatestOrder] = useState(null);
   const [toast, setToast] = useState(null);
-  const { status, error, user, idToken, isAdmin, signIn, signOut } = useAuth();
+  const [profile, setProfile] = useState(null);
+  const [profileStatus, setProfileStatus] = useState("idle");
+  const [profileError, setProfileError] = useState(null);
+  const { status, error, user, idToken, accessToken, isAdmin, signIn, signOut } = useAuth();
 
   useEffect(() => {
     if (!toast) return;
@@ -54,9 +72,13 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => {
-    const onHashChange = () => { setSelectedProductId(null); setRoute(routeFromHash()); };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    const onLocationChange = () => { setSelectedProductId(null); setRoute(routeFromLocation()); };
+    window.addEventListener("popstate", onLocationChange);
+    window.addEventListener("hashchange", onLocationChange);
+    return () => {
+      window.removeEventListener("popstate", onLocationChange);
+      window.removeEventListener("hashchange", onLocationChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -69,11 +91,60 @@ export default function App() {
   }, [route, selectedProductId]);
 
   function navigate(nextRoute) {
-    window.location.hash = nextRoute;
+    const path = pathForRoute(nextRoute);
+    if (window.location.pathname !== path || window.location.search || window.location.hash) {
+      window.history.pushState({}, "", path);
+    }
+    setSelectedProductId(null);
+    setRoute(nextRoute);
   }
 
   useEffect(() => {
+    if (status !== "ready" || !user || !accessToken) {
+      setProfile(null);
+      setProfileStatus(user ? "error" : "idle");
+      return undefined;
+    }
+
+    let cancelled = false;
+    setProfileStatus("loading");
+    setProfileError(null);
+    fetchCognitoProfile(accessToken)
+      .then((nextProfile) => {
+        if (cancelled) return;
+        setProfile(nextProfile);
+        setProfileStatus("ready");
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setProfileError(loadError.message || "Could not load your Cognito profile.");
+        setProfileStatus("error");
+      });
+    return () => { cancelled = true; };
+  }, [status, user, accessToken]);
+
+  const profileIncomplete = Boolean(user && profileStatus === "ready" && (!profile?.givenName || !profile?.familyName));
+
+  useEffect(() => {
     if (status !== "ready") return;
+
+    // A profile completion requirement applies to both roles: names are an
+    // account identity concern, not a customer-only order concern.
+    if (user && profileStatus === "ready" && profileIncomplete) {
+      if (route !== "complete-profile") navigate("complete-profile");
+      return;
+    }
+
+    // Don't let a completed user browse back to the one-purpose completion
+    // page. They can edit their details from My Profile instead.
+    if (user && profileStatus === "ready" && route === "complete-profile") {
+      navigate(isAdmin ? "dashboard" : "catalogue");
+      return;
+    }
+
+    // Wait for profile loading before returning an interrupted checkout; a
+    // newly registered user must complete their name before placing an order.
+    if (user && profileStatus !== "ready") return;
 
     // Coming back from a mid-checkout sign-in detour takes priority over
     // everything else here — including the admin auto-redirect below, on
@@ -88,10 +159,10 @@ export default function App() {
     // Only on a fresh landing with no route chosen yet — an admin who
     // deliberately clicks "View store" gets a real hash (#catalogue) and
     // this must not fight that choice on the next render.
-    if (isAdmin && !window.location.hash) {
+    if (isAdmin && window.location.pathname === "/" && !window.location.hash) {
       navigate("dashboard");
     }
-  }, [status, isAdmin]);
+  }, [status, user, profileStatus, profileIncomplete, route, isAdmin]);
 
   function addToCart(product) {
     setCart((current) => {
@@ -111,6 +182,23 @@ export default function App() {
     setCart((current) => current.map((item) => item.id === productId ? { ...item, quantity } : item));
   }
 
+  async function refreshCartPrices(changes) {
+    // The 409 tells us which products changed. Fetch their authoritative
+    // public catalogue records, then replace only those local basket
+    // snapshots; quantities stay exactly as the customer chose them.
+    const products = await Promise.all(
+      changes.map((change) => fetchProductById(change.product_id, idToken)),
+    );
+    const byId = new Map(products.map((product) => [product.id, product]));
+
+    setCart((current) => current.map((item) => {
+      const product = byId.get(item.id);
+      return product
+        ? { ...item, name: product.name, price: product.price, image_url: product.image_url }
+        : item;
+    }));
+  }
+
   return (
     <div className="min-h-screen bg-stone-50">
       <Toast message={toast?.message} key={toast?.key} />
@@ -127,7 +215,7 @@ export default function App() {
               <p className="text-sm text-stone-500">{isAdmin ? "Administrator" : "Product Catalogue"}</p>
             </button>
 
-            {isAdmin ? (
+            {route === "complete-profile" ? null : isAdmin ? (
               <AdminNavbar route={route} navigate={navigate} />
             ) : (
               <CustomerNavbar route={route} cart={cart} user={user} navigate={navigate} />
@@ -168,6 +256,11 @@ export default function App() {
             {error}
           </div>
         )}
+        {profileError && user && (
+          <div className="mb-6 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+            Could not load your account profile: {profileError}
+          </div>
+        )}
         {selectedProductId ? (
           <ProductDetail
             productId={selectedProductId}
@@ -185,11 +278,26 @@ export default function App() {
             clearCart={() => setCart([])}
             idToken={idToken}
             user={user}
+            profile={profile}
             onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
             onOrderCreated={(order) => { setLatestOrder(order); navigate("orders"); }}
+            onRefreshPrices={refreshCartPrices}
           />
         ) : route === "orders" && user ? (
           <OrdersPage idToken={idToken} latestOrder={latestOrder} />
+        ) : route === "complete-profile" && user && profileStatus === "ready" ? (
+          <CompleteProfilePage
+            accessToken={accessToken}
+            profile={profile}
+            onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "catalogue"); }}
+          />
+        ) : route === "profile" && user && profileStatus === "ready" ? (
+          <ProfilePage
+            accessToken={accessToken}
+            profile={profile}
+            onProfileUpdated={setProfile}
+            onSignOut={signOut}
+          />
         ) : route === "dashboard" && isAdmin ? (
           <Dashboard idToken={idToken} onNavigate={navigate} />
         ) : route === "admin" && isAdmin ? (

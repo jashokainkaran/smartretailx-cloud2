@@ -93,7 +93,7 @@ export function OrderCard({ order }) {
   return (
     <article className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0"><p className="break-all font-semibold text-stone-900">Order {order.order_id}</p><p className="mt-1 text-sm text-stone-500">{new Date(order.created_at).toLocaleString()}</p></div>
+        <div className="min-w-0"><p className="font-semibold text-stone-900">Order placed</p><p className="mt-1 text-sm text-stone-500">{new Date(order.created_at).toLocaleString()}</p></div>
         <StatusBadge status={order.status} />
       </div>
       <ul className="mt-4 space-y-2 border-y border-stone-100 py-4 text-sm text-stone-600">

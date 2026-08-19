@@ -42,7 +42,16 @@ export function WebSocketProvider({ children }) {
     function connect() {
       if (cancelled) return;
       const url = `${import.meta.env.VITE_WS_BASE_URL}?token=${encodeURIComponent(idToken)}`;
-      const socket = new WebSocket(url);
+      let socket;
+      try {
+        socket = new WebSocket(url);
+      } catch (error) {
+        // An invalid non-empty URL is a configuration error, distinct from
+        // an ordinary dropped connection. Retrying the same invalid value
+        // forever would be noisy and cannot repair it.
+        console.warn("VITE_WS_BASE_URL is invalid — real-time updates are disabled.", error);
+        return;
+      }
       socketRef.current = socket;
 
       socket.onmessage = (event) => {

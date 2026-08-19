@@ -6,11 +6,12 @@ import CardFields, { deriveMockToken, validateCard } from "./CardFields.jsx";
 import ProductImage from "./ProductImage.jsx";
 import { consumeCheckoutDraft, saveCheckoutDraft } from "../lib/checkoutDraft.js";
 
-const blankAddress = { recipient_name: "", street: "", city: "", postal_code: "", country: "" };
+const blankAddress = { recipient_first_name: "", recipient_last_name: "", street: "", city: "", postal_code: "", country: "" };
 const blankCard = { number: "", expiry: "", cvv: "" };
 
 const FIELD_LABELS = {
-  recipient_name: "Recipient name",
+  recipient_first_name: "Recipient first name",
+  recipient_last_name: "Recipient last name",
   street: "Street address",
   city: "City",
   postal_code: "Postal code",
@@ -24,7 +25,8 @@ const FIELD_LABELS = {
 
 function validateAll(form) {
   return {
-    recipient_name: validateRequired(form.address.recipient_name, "Recipient name"),
+    recipient_first_name: validateRequired(form.address.recipient_first_name, "Recipient first name"),
+    recipient_last_name: validateRequired(form.address.recipient_last_name, "Recipient last name"),
     street: validateRequired(form.address.street, "Street"),
     city: validateRequired(form.address.city, "City"),
     postal_code: validateRequired(form.address.postal_code, "Postal code"),
@@ -39,7 +41,7 @@ function hasErrors(errors) {
   return Object.values(errors).some(Boolean);
 }
 
-export default function CartPage({ cart, setQuantity, removeItem, clearCart, idToken, user, onOrderCreated, onSignIn }) {
+export default function CartPage({ cart, setQuantity, removeItem, clearCart, idToken, user, profile, onOrderCreated, onSignIn, onRefreshPrices }) {
   const [form, setForm] = useState({
     address: blankAddress,
     contactEmail: user?.email || "",
@@ -51,14 +53,49 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [priceChanges, setPriceChanges] = useState(null);
+  const [refreshNotice, setRefreshNotice] = useState(null);
 
   // Restores whatever was typed before the sign-in redirect, if anything —
   // one-time, consumed on read, so it can't resurrect a stale draft on a
   // later, unrelated visit to this page.
   useEffect(() => {
     const draft = consumeCheckoutDraft();
-    if (draft) setForm((current) => ({ ...current, ...draft }));
+    if (!draft) return;
+    // Drafts created by the older one-field checkout are still safe to use.
+    // Split the saved display name once rather than silently throwing it away.
+    const legacyName = draft.address?.recipient_name?.trim();
+    const [recipient_first_name, ...remainingName] = legacyName ? legacyName.split(/\s+/) : [];
+    setForm((current) => ({
+      ...current,
+      ...draft,
+      address: {
+        ...current.address,
+        ...draft.address,
+        recipient_first_name: draft.address?.recipient_first_name || recipient_first_name || "",
+        recipient_last_name: draft.address?.recipient_last_name || remainingName.join(" "),
+      },
+    }));
   }, []);
+
+  // A delivery recipient can be someone else, so profile values are only an
+  // initial convenience. Once a customer has typed a recipient name (or a
+  // checkout draft was restored), we never overwrite it.
+  useEffect(() => {
+    if (!profile?.givenName && !profile?.familyName) return;
+    setForm((current) => {
+      if (current.address.recipient_first_name || current.address.recipient_last_name) return current;
+      return {
+        ...current,
+        address: {
+          ...current.address,
+          recipient_first_name: profile.givenName || "",
+          recipient_last_name: profile.familyName || "",
+        },
+        contactEmail: current.contactEmail || profile.email || "",
+      };
+    });
+  }, [profile?.givenName, profile?.familyName, profile?.email]);
 
   const total = cart.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0);
   const errors = validateAll(form);
@@ -92,11 +129,30 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
 
     setSubmitting(true);
     setError(null);
+    setPriceChanges(null);
+    setRefreshNotice(null);
     try {
       const order = await createOrder({
         idToken,
-        items: cart.map((item) => ({ product_id: item.id, quantity: item.quantity })),
-        shippingAddress: form.address,
+        // This is the price the customer saw, not a price the backend trusts.
+        // The Order service compares it with the current catalogue price and
+        // rejects the checkout safely if a change needs acknowledgement.
+        items: cart.map((item) => ({
+          product_id: item.id,
+          quantity: item.quantity,
+          expected_unit_price: String(item.price),
+        })),
+        // The Order Service's existing API deliberately retains one
+        // recipient_name value. The UI captures a clearer first/last name
+        // pair, then joins it at the boundary without changing an already
+        // deployed order contract or historical order records.
+        shippingAddress: {
+          recipient_name: `${form.address.recipient_first_name.trim()} ${form.address.recipient_last_name.trim()}`.trim(),
+          street: form.address.street,
+          city: form.address.city,
+          postal_code: form.address.postal_code,
+          country: form.address.country,
+        },
         contactEmail: form.contactEmail,
         contactPhone: form.contactPhone,
         paymentMethod: form.paymentMethod,
@@ -105,7 +161,26 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
       clearCart();
       onOrderCreated(order);
     } catch (checkoutError) {
+      if (checkoutError.status === 409 && checkoutError.details?.code === "PRICE_CHANGED") {
+        setPriceChanges(checkoutError.details.changes);
+      }
       setError(checkoutError.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function refreshPrices() {
+    if (!priceChanges || !onRefreshPrices) return;
+
+    setSubmitting(true);
+    try {
+      await onRefreshPrices(priceChanges);
+      setPriceChanges(null);
+      setError(null);
+      setRefreshNotice("Your basket prices were updated. Review the total, then place your order again.");
+    } catch (refreshError) {
+      setError(refreshError.message || "Could not refresh basket prices. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -170,11 +245,18 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
           )}
           <fieldset className="space-y-3">
             <legend className="text-sm font-semibold text-stone-800">Delivery address</legend>
-            <TextField
-              label="Recipient name" value={form.address.recipient_name} autoComplete="name"
-              onChange={(v) => updateAddress("recipient_name", v)}
-              onBlur={() => touch("recipient_name")} error={showError("recipient_name") && errors.recipient_name}
-            />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <TextField
+                label="Recipient first name" value={form.address.recipient_first_name} autoComplete="given-name"
+                onChange={(v) => updateAddress("recipient_first_name", v)}
+                onBlur={() => touch("recipient_first_name")} error={showError("recipient_first_name") && errors.recipient_first_name}
+              />
+              <TextField
+                label="Recipient last name" value={form.address.recipient_last_name} autoComplete="family-name"
+                onChange={(v) => updateAddress("recipient_last_name", v)}
+                onBlur={() => touch("recipient_last_name")} error={showError("recipient_last_name") && errors.recipient_last_name}
+              />
+            </div>
             <TextField
               label="Street address" value={form.address.street} autoComplete="street-address"
               onChange={(v) => updateAddress("street", v)}
@@ -248,6 +330,31 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
             )}
           </fieldset>
 
+          {priceChanges && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" role="alert">
+              <p className="font-semibold">A price changed before your order was placed.</p>
+              <ul className="mt-2 space-y-1">
+                {priceChanges.map((change) => (
+                  <li key={change.product_id}>
+                    {change.name}: {formatPrice(change.expected_unit_price)} → {formatPrice(change.current_unit_price)}
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={refreshPrices}
+                disabled={submitting}
+                className="mt-3 rounded-md border border-amber-700 px-3 py-1.5 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+              >
+                Refresh basket prices
+              </button>
+            </div>
+          )}
+          {refreshNotice && (
+            <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+              {refreshNotice}
+            </p>
+          )}
           {error && <p className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
           <div className="flex items-center justify-between border-t border-stone-200 pt-4 text-sm">
             <span className="text-stone-600">Total</span>

@@ -17,6 +17,7 @@ export default function CustomerNavbar({ route, cart, user, navigate }) {
       <NavButton active={route === "catalogue"} onClick={() => go("catalogue")}>Shop</NavButton>
       <NavButton active={route === "cart"} onClick={() => go("cart")} icon={<CartIcon />} badge={itemCount}>Basket</NavButton>
       {user && <NavButton active={route === "orders"} onClick={() => go("orders")}>My orders</NavButton>}
+      {user && <NavButton active={route === "profile"} onClick={() => go("profile")}>My profile</NavButton>}
     </>
   );
 

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchAdminProducts } from "../api/products.js";
-import { fetchAttentionOrders, fetchOrderSummary } from "../api/orders.js";
+import { fetchAttentionOrders, fetchOrderSummary, fetchReadyToShip } from "../api/orders.js";
 import { fetchLowStock } from "../api/inventory.js";
 import { StatusBadge } from "./OrdersPage.jsx";
 import ErrorState from "./ErrorState.jsx";
@@ -11,15 +11,26 @@ import { useWebSocketMessage } from "../realtime/WebSocketProvider.jsx";
 
 const ORDER_TOAST_LIFETIME_MS = 5000;
 const LOW_STOCK_THRESHOLD = 10;
+// The immediate local update makes the UI responsive; half a second gives
+// DynamoDB's eventually-consistent indexes a little time before the source
+// of truth is re-read.
+const LIVE_REFRESH_DEBOUNCE_MS = 500;
+const RECENT_EVENT_ID_LIMIT = 200;
 
 export default function Dashboard({ idToken, onNavigate }) {
   const [products, setProducts] = useState([]);
   const [attentionOrders, setAttentionOrders] = useState([]);
+  const [readyToShip, setReadyToShip] = useState([]);
   const [summary, setSummary] = useState(null);
   const [lowStock, setLowStock] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [orderToasts, setOrderToasts] = useState([]);
+  const processedEventIdsRef = useRef(new Set());
+  const liveRefreshTimerRef = useRef(null);
+  const pendingRefreshSectionsRef = useRef(new Set());
+  const liveRefreshVersionRef = useRef(0);
+  const mountedRef = useRef(true);
   // Deliberately separate from summary.total_orders (the true daily total,
   // computed server-side) — this counts only what's arrived over the
   // WebSocket since the dashboard was opened, an honest live-only number,
@@ -33,17 +44,90 @@ export default function Dashboard({ idToken, onNavigate }) {
       fetchAdminProducts({ limit: 100, idToken }),
       fetchAttentionOrders(idToken),
       fetchOrderSummary(idToken),
+      fetchReadyToShip({ idToken }),
       fetchLowStock(idToken, LOW_STOCK_THRESHOLD),
     ])
-      .then(([productPage, stuck, orderSummary, lowStockItems]) => {
+      .then(([productPage, stuck, orderSummary, readyOrders, lowStockItems]) => {
         setProducts(productPage.items || []);
         setAttentionOrders(stuck || []);
         setSummary(orderSummary);
+        setReadyToShip(readyOrders || []);
         setLowStock(lowStockItems || []);
       })
       .catch((loadError) => setError(loadError.message))
       .finally(() => setLoading(false));
   }, [idToken]);
+
+  // A WebSocket message says that data changed, but it is intentionally not
+  // the source of truth. Coalesce a burst of messages into one targeted
+  // refresh; a response from an older request is ignored so it cannot put
+  // stale data back on screen after a newer update has arrived.
+  const scheduleLiveRefresh = useCallback((sections) => {
+    sections.forEach((section) => pendingRefreshSectionsRef.current.add(section));
+    liveRefreshVersionRef.current += 1;
+    clearTimeout(liveRefreshTimerRef.current);
+
+    liveRefreshTimerRef.current = setTimeout(() => {
+      liveRefreshTimerRef.current = null;
+      const version = liveRefreshVersionRef.current;
+      const sectionsToRefresh = pendingRefreshSectionsRef.current;
+      pendingRefreshSectionsRef.current = new Set();
+      const requests = [];
+
+      if (sectionsToRefresh.has("attention")) requests.push(["attention", fetchAttentionOrders(idToken)]);
+      if (sectionsToRefresh.has("summary")) requests.push(["summary", fetchOrderSummary(idToken)]);
+      if (sectionsToRefresh.has("readyToShip")) requests.push(["readyToShip", fetchReadyToShip({ idToken })]);
+      if (sectionsToRefresh.has("lowStock")) requests.push(["lowStock", fetchLowStock(idToken, LOW_STOCK_THRESHOLD)]);
+
+      Promise.all(requests.map(([, request]) => request))
+        .then((responses) => {
+          if (!mountedRef.current || version !== liveRefreshVersionRef.current) return;
+          const refreshed = Object.fromEntries(requests.map(([name], index) => [name, responses[index]]));
+          if ("attention" in refreshed) setAttentionOrders(refreshed.attention || []);
+          if ("summary" in refreshed) setSummary(refreshed.summary);
+          if ("readyToShip" in refreshed) setReadyToShip(refreshed.readyToShip || []);
+          if ("lowStock" in refreshed) setLowStock(refreshed.lowStock || []);
+        })
+        // Keep the already-visible dashboard usable if a background refresh
+        // has a brief network failure. A normal reload still shows its error.
+        .catch((refreshError) => console.warn("Live dashboard refresh failed", refreshError));
+    }, LIVE_REFRESH_DEBOUNCE_MS);
+  }, [idToken]);
+
+  const shouldHandleEvent = useCallback((message) => {
+    // Older queued messages from before this deployment have no event_id.
+    // Process them once for backwards compatibility; new messages are
+    // de-duplicated for the lifetime of this dashboard session.
+    if (!message.event_id) return true;
+    const processed = processedEventIdsRef.current;
+    if (processed.has(message.event_id)) return false;
+    processed.add(message.event_id);
+    if (processed.size > RECENT_EVENT_ID_LIMIT) processed.delete(processed.values().next().value);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    // React Strict Mode deliberately mounts, cleans up and mounts effects
+    // again in development. Reset this flag on every effect setup so that
+    // test behaviour matches the real mounted dashboard.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearTimeout(liveRefreshTimerRef.current);
+      liveRefreshVersionRef.current += 1;
+    };
+  }, []);
+
+  // The low-stock list comes from Inventory, which — correctly, per
+  // database-per-service — has no idea what a product is called, only its
+  // id and quantity. Product Catalogue owns the name, so it's joined here
+  // in the frontend rather than either service reaching into the other's
+  // data. Falls back to the raw id for the rare case a low-stock product
+  // isn't in the first 100 admin products fetched above.
+  const productNameById = useMemo(
+    () => new Map(products.map((product) => [product.id, product.name])),
+    [products]
+  );
 
   const pushOrderToast = useCallback((toast) => {
     const key = `${toast.order_id}-${Date.now()}`;
@@ -54,23 +138,48 @@ export default function Dashboard({ idToken, onNavigate }) {
   }, []);
 
   const handleOrderResolved = useCallback((message) => {
+    if (!shouldHandleEvent(message)) return;
     setLiveResolvedCount((count) => count + 1);
     pushOrderToast({ ...message, type: "OrderResolved" });
-    // A newly-resolved COMPENSATION_FAILED/PAYMENT_UNKNOWN/STOCK_UNKNOWN
-    // order needs to show up in the attention list live too, not just as a
-    // toast that's gone in five seconds — re-fetching is simpler and safer
-    // than trying to reconstruct the full order shape from the push payload
-    // alone, and this event is rare enough that the extra request is cheap.
-    if (message.status && message.status.includes("UNKNOWN")) load();
-  }, [pushOrderToast, load]);
+    // Make the two visible order indicators feel immediate, then re-read
+    // the service-owned truth shortly afterwards (including revenue/AOV).
+    setSummary((current) => current && ({
+      ...current,
+      total_orders: current.total_orders + 1,
+      by_status: {
+        ...current.by_status,
+        [message.status]: (current.by_status[message.status] || 0) + 1,
+      },
+      by_payment_method: message.payment_method ? {
+        ...current.by_payment_method,
+        [message.payment_method]: (current.by_payment_method[message.payment_method] || 0) + 1,
+      } : current.by_payment_method,
+    }));
+    if (message.status === "CONFIRMED" || message.status === "PENDING_ON_DELIVERY") {
+      setReadyToShip((current) => [
+        { order_id: message.order_id, status: message.status },
+        ...current.filter((order) => order.order_id !== message.order_id),
+      ].slice(0, 5));
+    }
+    scheduleLiveRefresh(["summary", "readyToShip", "lowStock"]);
+  }, [pushOrderToast, scheduleLiveRefresh, shouldHandleEvent]);
   useWebSocketMessage("OrderResolved", handleOrderResolved);
 
   const handleNeedsReconciliation = useCallback((message) => {
-    setLiveResolvedCount((count) => count + 1);
+    if (!shouldHandleEvent(message)) return;
     pushOrderToast({ ...message, type: "OrderNeedsReconciliation" });
-    load();
-  }, [pushOrderToast, load]);
+    scheduleLiveRefresh(["attention"]);
+  }, [pushOrderToast, scheduleLiveRefresh, shouldHandleEvent]);
   useWebSocketMessage("OrderNeedsReconciliation", handleNeedsReconciliation);
+
+  const handleDeliveryStatusChanged = useCallback((message) => {
+    if (!shouldHandleEvent(message)) return;
+    // The update's own payload is enough to remove the order immediately;
+    // the delayed fetch reconciles with the eventually-consistent GSI.
+    setReadyToShip((current) => current.filter((order) => order.order_id !== message.order_id));
+    scheduleLiveRefresh(["readyToShip"]);
+  }, [scheduleLiveRefresh, shouldHandleEvent]);
+  useWebSocketMessage("DeliveryStatusChanged", handleDeliveryStatusChanged);
 
   // A live stock tick doesn't change WHICH products are low — only a
   // reserve/release/confirm changes available_quantity enough to matter —
@@ -137,13 +246,13 @@ export default function Dashboard({ idToken, onNavigate }) {
           tone={attentionOrders.length > 0 ? "warning" : "default"}
         />
         <StatTile
-          label="Resolved live"
+          label="Orders resolved live"
           value={liveResolvedCount}
-          hint="Since this page opened"
+          hint="Confirmed, rejected or failed while viewing"
         />
       </div>
 
-      <div className="mt-6 grid gap-6 sm:mt-8 sm:gap-8 lg:grid-cols-3">
+      <div className="mt-6 grid gap-6 sm:mt-8 sm:gap-8 lg:grid-cols-4">
         <section className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-base font-bold text-stone-900 sm:text-lg">Orders needing attention</h3>
@@ -167,6 +276,27 @@ export default function Dashboard({ idToken, onNavigate }) {
 
         <section className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="flex items-center justify-between gap-3">
+            <h3 className="text-base font-bold text-stone-900 sm:text-lg">Ready to ship</h3>
+            <button onClick={() => onNavigate("admin")} className="text-sm font-medium text-brand-700 hover:text-brand-900">
+              Manage orders
+            </button>
+          </div>
+          {readyToShip.length === 0 ? (
+            <p className="mt-4 text-sm text-stone-500">No confirmed orders are waiting to be shipped.</p>
+          ) : (
+            <ul className="mt-4 space-y-2">
+              {readyToShip.map((order) => (
+                <li key={order.order_id} className="flex items-center justify-between gap-3 rounded-md bg-stone-50 p-3 text-sm">
+                  <span className="min-w-0 truncate font-medium text-stone-900">{order.order_id}</span>
+                  <span className="shrink-0"><StatusBadge status={order.status} /></span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex items-center justify-between gap-3">
             <h3 className="text-base font-bold text-stone-900 sm:text-lg">Low stock</h3>
             <button onClick={() => onNavigate("admin")} className="text-sm font-medium text-brand-700 hover:text-brand-900">
               Manage stock
@@ -178,7 +308,9 @@ export default function Dashboard({ idToken, onNavigate }) {
             <ul className="mt-4 space-y-2">
               {lowStock.slice(0, 5).map((item) => (
                 <li key={item.product_id} className="flex items-center justify-between gap-3 rounded-md bg-stone-50 p-3 text-sm">
-                  <span className="min-w-0 truncate font-medium text-stone-900">{item.product_id}</span>
+                  <span className="min-w-0 truncate font-medium text-stone-900">
+                    {productNameById.get(item.product_id) || item.product_id}
+                  </span>
                   <span className="shrink-0 font-semibold text-amber-800">{item.available_quantity} left</span>
                 </li>
               ))}

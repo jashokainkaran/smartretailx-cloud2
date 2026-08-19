@@ -108,7 +108,11 @@ export async function beginSignIn() {
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: "openid email profile",
+    // This scope is deliberately requested alongside the normal OIDC scopes.
+    // It permits a signed-in person to call Cognito's self-service account
+    // APIs (profile, password and MFA) with their access token. It is not an
+    // AWS administrator permission and cannot operate on another user.
+    scope: "openid email profile aws.cognito.signin.user.admin",
     state,
     code_challenge: challenge,
     code_challenge_method: "S256",

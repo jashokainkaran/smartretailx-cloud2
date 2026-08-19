@@ -67,6 +67,10 @@ export function AuthProvider({ children }) {
     // be used here. Named idToken (not accessToken) deliberately, so this
     // is never mistaken for the OAuth-conventional choice.
     idToken: session?.tokens.id_token ?? null,
+    // Cognito self-service account APIs deliberately use the access token.
+    // API Gateway keeps using idToken because its authorizer needs the aud
+    // and cognito:groups claims found there.
+    accessToken: session?.tokens.access_token ?? null,
     isAdmin: session?.user.groups.includes("admin") ?? false,
     signIn: beginSignIn,
     signOut: beginSignOut,

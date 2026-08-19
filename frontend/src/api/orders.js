@@ -50,3 +50,10 @@ export function updateDeliveryStatus(orderId, deliveryStatus, idToken) {
 export function fetchOrderSummary(idToken) {
   return request("/api/v1/orders/admin/summary", { idToken });
 }
+
+// Admin-only. These are confirmed orders with no fulfilment status yet;
+// setting PROCESSING (or a later delivery state) removes one from this list.
+export function fetchReadyToShip({ limit = 5, idToken } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request(`/api/v1/orders/admin/ready-to-ship?${params.toString()}`, { idToken });
+}

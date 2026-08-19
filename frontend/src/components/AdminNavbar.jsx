@@ -20,6 +20,7 @@ export default function AdminNavbar({ route, navigate }) {
       <NavButton active={route === "admin"} onClick={() => go("admin")}>Products</NavButton>
       <NavButton active={route === "customers"} onClick={() => go("customers")}>Customers &amp; orders</NavButton>
       <NavButton active={route === "catalogue"} onClick={() => go("catalogue")}>View store</NavButton>
+      <NavButton active={route === "profile"} onClick={() => go("profile")}>My profile</NavButton>
     </>
   );
 
