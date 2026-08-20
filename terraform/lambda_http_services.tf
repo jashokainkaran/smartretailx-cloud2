@@ -173,6 +173,20 @@ resource "aws_iam_role_policy" "product_api" {
         ]
         Resource = aws_dynamodb_table.product_outbox.arn
       },
+      {
+        # Scoped to exactly the key prefix app/images.py writes to, not the
+        # whole bucket. PutObject authorizes the presigned POST an admin's
+        # browser sends directly to S3 (presigning happens locally inside
+        # the Lambda, no network call — this is the grant S3 checks for
+        # real when that POST actually lands). DeleteObject backs
+        # repository.update_product's cleanup of a replaced image.
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:DeleteObject",
+        ]
+        Resource = "${aws_s3_bucket.product_images.arn}/product-images/products/*"
+      },
     ]
   })
 }
@@ -361,6 +375,13 @@ locals {
         PRODUCTS_TABLE = aws_dynamodb_table.products.name
         OUTBOX_TABLE   = aws_dynamodb_table.product_outbox.name
         CORS_ORIGINS   = var.frontend_origin
+
+        # Backs POST /api/v1/products/admin/image-upload-url (app/images.py).
+        # The base URL is the SAME CloudFront domain everything else uses
+        # (hosting.tf routes /product-images/* to this bucket) — one domain,
+        # not a second one to configure CORS/DNS for.
+        PRODUCT_IMAGES_BUCKET   = aws_s3_bucket.product_images.id
+        PRODUCT_IMAGES_BASE_URL = "https://${aws_cloudfront_distribution.main.domain_name}"
       }
     }
 

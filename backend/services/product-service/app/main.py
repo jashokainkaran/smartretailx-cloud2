@@ -8,8 +8,10 @@ from app.models import (
     ProductPage,
     ProductUpdate,
     ProductBatchRequest,
+    ImageUploadRequest,
+    ImageUploadResponse,
 )
-from app import repository
+from app import repository, images
 from app.auth import require_admin
 from app.correlation import correlation_id_from_request, correlation_middleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,6 +103,20 @@ def list_products_for_admin(
         limit=limit, cursor=cursor, include_inactive=True
     )
     return {"items": items, "next_cursor": next_cursor}
+
+
+@app.post("/api/v1/products/admin/image-upload-url", response_model=ImageUploadResponse)
+def create_image_upload_url(payload: ImageUploadRequest, _claims: dict = Depends(require_admin)):
+    """
+    Generate a short-lived presigned S3 PUT URL for a product image.
+
+    The browser uploads directly to S3 with the returned URL, then sends the
+    returned image_url on the usual create/update product call — no image
+    bytes ever pass through this Lambda or API Gateway.
+    """
+    if not images.allowed_content_type(payload.content_type):
+        raise HTTPException(status_code=422, detail="Unsupported image type. Use JPEG, PNG, or WebP.")
+    return images.presign_upload(payload.content_type)
 
 
 @app.get("/api/v1/products/{product_id}", response_model=Product)

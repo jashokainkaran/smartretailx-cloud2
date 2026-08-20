@@ -1,6 +1,6 @@
 import boto3
 import uuid
-from app import config
+from app import config, images
 from app.models import ProductCreate, Product, ProductUpdate
 import json
 import base64
@@ -118,20 +118,34 @@ def update_product(product_id: str, data: ProductUpdate) -> Product | None:
     expression_attribute_values = {f":{k}": v for k, v in updates.items()}
 
     try:
+        # ALL_OLD, not ALL_NEW: this needs the PREVIOUS image_url (to clean
+        # up a replaced upload below), and DynamoDB only returns one or the
+        # other from a single UpdateItem. Merging `updates` onto the old
+        # item gives the exact same new-state result ALL_NEW would have,
+        # with no second round trip.
         response = table.update_item(
             Key={"id": product_id},
             UpdateExpression=update_expression,
             ConditionExpression="attribute_exists(id)",
             ExpressionAttributeNames=expression_attribute_names,
             ExpressionAttributeValues=expression_attribute_values,
-            ReturnValues="ALL_NEW",
+            ReturnValues="ALL_OLD",
         )
-        return Product(**response["Attributes"])
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             # Condition failed — the product doesn't exist.
             return None
         raise
+
+    old_item = response["Attributes"]
+    updated_product = Product(**{**old_item, **updates})
+
+    if "image_url" in updates:
+        old_image_url = old_item.get("image_url")
+        if old_image_url and old_image_url != updates["image_url"]:
+            images.delete_image(old_image_url)
+
+    return updated_product
 
 
 def set_product_active(product_id: str, active: bool) -> Product | None:

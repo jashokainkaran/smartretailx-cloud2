@@ -113,3 +113,15 @@ def test_admin_single_group_bracket_string_is_accepted_end_to_end(monkeypatch):
     claims = {"sub": "admin-1", "cognito:groups": "[admin]"}
     response = handler(lambda_event("GET", "/api/v1/products/admin", claims=claims), {})
     assert response["statusCode"] == 200
+
+
+def test_customer_cannot_request_an_image_upload_url(monkeypatch):
+    """The presigned-URL endpoint is as admin-only as every other write
+    route — a customer session must not be able to mint an S3 PUT URL."""
+    monkeypatch.setattr(config, "AUTH_TEST_MODE", False)
+    claims = {"sub": "cust-1", "cognito:groups": "[customers]"}
+    event = lambda_event("POST", "/api/v1/products/admin/image-upload-url", claims=claims)
+    event["body"] = json.dumps({"content_type": "image/png"})
+    response = handler(event, {})
+    assert response["statusCode"] == 403
+    assert detail_of(response) == "Administrator access is required"

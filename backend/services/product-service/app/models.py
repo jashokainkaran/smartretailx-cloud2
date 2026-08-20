@@ -76,3 +76,17 @@ class ProductPage(BaseModel):
 # ceilings line up rather than one silently truncating the other.
 class ProductBatchRequest(BaseModel):
     product_ids: list[str] = Field(..., min_length=1, max_length=100)
+
+
+# Request/response pair for the admin image-upload flow (app/images.py). The
+# browser asks for a presigned URL, PUTs the file straight to S3, then sends
+# the returned image_url back on the usual create/update product call — the
+# upload itself never touches this service beyond generating the URL.
+class ImageUploadRequest(BaseModel):
+    content_type: str
+
+
+class ImageUploadResponse(BaseModel):
+    post_url: str
+    fields: dict[str, str]
+    image_url: str

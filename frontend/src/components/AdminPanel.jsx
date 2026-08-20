@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { createProduct, fetchAdminProducts, setProductActive, updateProduct } from "../api/products.js";
+import { createProduct, fetchAdminProducts, setProductActive, updateProduct, uploadProductImage } from "../api/products.js";
 import { addStock, fetchStock } from "../api/inventory.js";
 import { fetchAttentionOrders } from "../api/orders.js";
 import { fetchPayment, refundPayment } from "../api/payments.js";
@@ -8,6 +8,8 @@ import ProductImage from "./ProductImage.jsx";
 import { formatPrice } from "../lib/currency.js";
 
 const blankProduct = { name: "", description: "", price: "", category: "", image_url: "" };
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 export default function AdminPanel({ idToken }) {
   const [products, setProducts] = useState([]);
@@ -169,7 +171,30 @@ export default function AdminPanel({ idToken }) {
 
 function ProductEditor({ idToken, product, onSaved, onCancel, onError }) {
   const [form, setForm] = useState(() => product ? { ...product, image_url: product.image_url || "" } : blankProduct);
+  const [uploading, setUploading] = useState(false);
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+
+  async function handleImageFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // allow re-selecting the same file after an error
+    if (!file) return;
+    onError(null);
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      onError("Please choose a JPEG, PNG, or WebP image.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      onError("Image must be 5MB or smaller.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const imageUrl = await uploadProductImage(file, idToken);
+      update("image_url", imageUrl);
+    } catch (uploadError) { onError(uploadError.message); }
+    finally { setUploading(false); }
+  }
+
   async function submit(event) {
     event.preventDefault(); onError(null);
     const payload = { ...form, price: String(form.price), image_url: form.image_url || null };
@@ -201,16 +226,19 @@ function ProductEditor({ idToken, product, onSaved, onCancel, onError }) {
           </label>
         ))}
         <label className="text-sm font-medium text-stone-700">
-          Image URL
+          Image
           <div className="mt-1 flex items-center gap-3">
             <ProductImage src={form.image_url} className="h-11 w-11 shrink-0 rounded-md object-cover" />
-            <input
-              type="text"
-              value={form.image_url}
-              onChange={(event) => update("image_url", event.target.value)}
-              placeholder="https://…"
-              className="w-full rounded-md border border-stone-300 px-3 py-2"
-            />
+            <div className="flex w-full flex-col gap-2">
+              <input
+                type="file"
+                accept={ALLOWED_IMAGE_TYPES.join(",")}
+                onChange={handleImageFile}
+                disabled={uploading}
+                className="w-full text-sm text-stone-700 file:mr-3 file:rounded-md file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-brand-700 hover:file:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              {uploading && <p className="text-xs text-stone-500">Uploading…</p>}
+            </div>
           </div>
         </label>
         <label className="sm:col-span-2 text-sm font-medium text-stone-700">

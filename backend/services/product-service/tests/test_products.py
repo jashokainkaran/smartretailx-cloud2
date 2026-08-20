@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app import config
+from app import config, images
 
 client = TestClient(app)
 
@@ -309,3 +309,136 @@ def test_batch_get_over_100_ids_is_rejected():
         "product_ids": [f"id-{n}" for n in range(101)],
     })
     assert response.status_code == 422
+
+
+# ---- Image upload URL ----
+
+def test_image_upload_url_rejects_unsupported_content_type():
+    """SVG especially: it can embed a <script>, a real stored-XSS vector."""
+    response = client.post(
+        "/api/v1/products/admin/image-upload-url",
+        json={"content_type": "image/svg+xml"},
+    )
+    assert response.status_code == 422
+
+
+def test_image_upload_url_returns_presigned_post_and_public_url(monkeypatch):
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BUCKET", "test-bucket")
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BASE_URL", "https://images.example.com")
+    monkeypatch.setattr(
+        images._s3_client,
+        "generate_presigned_post",
+        lambda **kwargs: {
+            "url": "https://test-bucket.s3.amazonaws.com/",
+            "fields": {"key": kwargs["Key"], "Content-Type": kwargs["Fields"]["Content-Type"]},
+        },
+    )
+
+    response = client.post(
+        "/api/v1/products/admin/image-upload-url",
+        json={"content_type": "image/png"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["post_url"] == "https://test-bucket.s3.amazonaws.com/"
+    assert body["fields"]["Content-Type"] == "image/png"
+    assert body["image_url"].startswith(
+        "https://images.example.com/product-images/products/"
+    )
+    assert body["image_url"].endswith(".png")
+
+
+def test_image_upload_url_size_cap_is_signed_into_the_conditions(monkeypatch):
+    """The 5MB cap must be enforced by S3 itself (via the signed
+    content-length-range condition), not just the browser's own check —
+    otherwise calling this endpoint directly bypasses it entirely."""
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BUCKET", "test-bucket")
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BASE_URL", "https://images.example.com")
+    seen_conditions = []
+
+    def fake_presign(**kwargs):
+        seen_conditions.extend(kwargs["Conditions"])
+        return {"url": "https://test-bucket.s3.amazonaws.com/", "fields": {}}
+
+    monkeypatch.setattr(images._s3_client, "generate_presigned_post", fake_presign)
+
+    client.post("/api/v1/products/admin/image-upload-url", json={"content_type": "image/jpeg"})
+
+    assert ["content-length-range", 1, images.MAX_UPLOAD_BYTES] in seen_conditions
+
+
+def test_image_upload_url_generates_a_fresh_key_each_call(monkeypatch):
+    """Two uploads must never collide on the same object key."""
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BUCKET", "test-bucket")
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BASE_URL", "https://images.example.com")
+    seen_keys = []
+
+    def fake_presign(**kwargs):
+        seen_keys.append(kwargs["Key"])
+        return {"url": "https://test-bucket.s3.amazonaws.com/", "fields": {}}
+
+    monkeypatch.setattr(images._s3_client, "generate_presigned_post", fake_presign)
+
+    for _ in range(2):
+        response = client.post(
+            "/api/v1/products/admin/image-upload-url",
+            json={"content_type": "image/jpeg"},
+        )
+        assert response.status_code == 200
+
+    assert len(set(seen_keys)) == 2
+
+
+# ---- Image cleanup on replace ----
+
+def test_updating_image_deletes_the_previous_object(monkeypatch):
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BASE_URL", "https://images.example.com")
+    deleted = []
+    monkeypatch.setattr(
+        images._s3_client, "delete_object",
+        lambda **kwargs: deleted.append(kwargs["Key"]),
+    )
+
+    created = client.post("/api/v1/products", json={
+        "name": "Old Image Product", "description": "d", "price": "9.99",
+        "category": "misc",
+        "image_url": "https://images.example.com/product-images/products/old.png",
+    }).json()
+
+    response = client.put(f"/api/v1/products/{created['id']}", json={
+        "image_url": "https://images.example.com/product-images/products/new.png",
+    })
+    assert response.status_code == 200
+    assert deleted == ["product-images/products/old.png"]
+
+
+def test_updating_an_unrelated_field_does_not_touch_s3(monkeypatch):
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BASE_URL", "https://images.example.com")
+    called = []
+    monkeypatch.setattr(images._s3_client, "delete_object", lambda **kwargs: called.append(kwargs))
+
+    created = client.post("/api/v1/products", json={
+        "name": "P", "description": "d", "price": "9.99", "category": "misc",
+        "image_url": "https://images.example.com/product-images/products/keep.png",
+    }).json()
+
+    client.put(f"/api/v1/products/{created['id']}", json={"name": "P Renamed"})
+    assert called == []
+
+
+def test_external_image_url_is_never_deleted(monkeypatch):
+    """A URL predating uploads (pasted manually, before this feature
+    existed) must not be treated as one of ours to clean up."""
+    monkeypatch.setattr(config, "PRODUCT_IMAGES_BASE_URL", "https://images.example.com")
+    called = []
+    monkeypatch.setattr(images._s3_client, "delete_object", lambda **kwargs: called.append(kwargs))
+
+    created = client.post("/api/v1/products", json={
+        "name": "P", "description": "d", "price": "9.99", "category": "misc",
+        "image_url": "https://cdn.example.com/some/external.jpg",
+    }).json()
+
+    client.put(f"/api/v1/products/{created['id']}", json={
+        "image_url": "https://images.example.com/product-images/products/new.png",
+    })
+    assert called == []

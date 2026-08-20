@@ -215,8 +215,9 @@ resource "aws_wafv2_web_acl" "main" {
 # ---------- Distribution ----------
 
 locals {
-  s3_origin_id  = "frontend-s3"
-  api_origin_id = "api-gateway"
+  s3_origin_id             = "frontend-s3"
+  api_origin_id            = "api-gateway"
+  product_images_origin_id = "product-images-s3"
 
   # The origin wants a bare hostname. api_endpoint is a full URL, so the
   # scheme has to come off.
@@ -257,6 +258,12 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
+  origin {
+    origin_id                = local.product_images_origin_id
+    domain_name              = aws_s3_bucket.product_images.bucket_regional_domain_name
+    origin_access_control_id = aws_cloudfront_origin_access_control.product_images.id
+  }
+
   # --- Static assets ---
   default_cache_behavior {
     target_origin_id       = local.s3_origin_id
@@ -289,6 +296,22 @@ resource "aws_cloudfront_distribution" "main" {
     # Forwarding all headers including Host is the single most common
     # mistake in this configuration.
     origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
+  }
+
+  # --- Product images ---
+  ordered_cache_behavior {
+    path_pattern           = "/product-images/*"
+    target_origin_id       = local.product_images_origin_id
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    # AWS managed "CachingOptimized". Safe to cache aggressively: every
+    # upload gets a fresh UUID key (app/images.py), so a URL either doesn't
+    # exist yet or points at one immutable object forever — no
+    # invalidation problem the way a mutable frontend deploy has.
+    cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   }
 
   # Client-side routing. S3 has no notion of a route: a refresh on

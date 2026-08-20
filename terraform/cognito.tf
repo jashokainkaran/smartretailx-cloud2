@@ -91,8 +91,14 @@ resource "aws_cognito_user_pool_client" "web" {
     "profile",
     "aws.cognito.signin.user.admin",
   ]
-  callback_urls                 = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}"])
-  logout_urls                   = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}"])
+  # Explicitly always includes the local dev server, rather than relying on
+  # frontend_origin happening to differ from the deployed domain to get both
+  # via distinct(). frontend_origin is meant to hold the real deployed
+  # origin (product_images.tf's S3 CORS rule and every service's
+  # CORS_ORIGINS both need the actual value, not a dev placeholder) — that
+  # must not silently cost local Hosted UI sign-in its callback URL.
+  callback_urls                 = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}", "http://localhost:5173"])
+  logout_urls                   = distinct([var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}", "http://localhost:5173"])
   supported_identity_providers  = ["COGNITO"]
   prevent_user_existence_errors = "ENABLED"
   enable_token_revocation       = true

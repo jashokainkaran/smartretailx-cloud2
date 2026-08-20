@@ -100,11 +100,12 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
 # the protected surface is introduced one operation at a time.
 locals {
   jwt_routes = {
-    product_create     = { service = "product", route_key = "POST /api/v1/products" }
-    product_admin_list = { service = "product", route_key = "GET /api/v1/products/admin" }
-    product_update     = { service = "product", route_key = "PUT /api/v1/products/{product_id}" }
-    product_activate   = { service = "product", route_key = "PATCH /api/v1/products/{product_id}/activate" }
-    product_deactivate = { service = "product", route_key = "PATCH /api/v1/products/{product_id}/deactivate" }
+    product_create           = { service = "product", route_key = "POST /api/v1/products" }
+    product_admin_list       = { service = "product", route_key = "GET /api/v1/products/admin" }
+    product_image_upload_url = { service = "product", route_key = "POST /api/v1/products/admin/image-upload-url" }
+    product_update           = { service = "product", route_key = "PUT /api/v1/products/{product_id}" }
+    product_activate         = { service = "product", route_key = "PATCH /api/v1/products/{product_id}/activate" }
+    product_deactivate       = { service = "product", route_key = "PATCH /api/v1/products/{product_id}/deactivate" }
 
     inventory_add          = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/add" }
     inventory_reserve_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/reserve" }

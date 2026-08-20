@@ -1,0 +1,27 @@
+# ECS/Fargate proof-of-concept image for product-service. Unlike Dockerfile
+# (the Lambda container image, invoked via the Mangum handler), this runs the
+# identical FastAPI app under Uvicorn as a long-running HTTP process — the
+# brief's explicit "EKS or ECS Fargate" requirement, demonstrated against the
+# same application code rather than a rewrite.
+FROM python:3.11-slim
+
+# Runs as a non-root user inside the task, matching the least-privilege
+# posture used elsewhere in this project's IAM policies.
+RUN useradd --create-home --uid 1000 appuser
+WORKDIR /home/appuser
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+
+USER appuser
+
+EXPOSE 8000
+
+# Matches the ALB target group's health check path — the app.main module
+# already exposes a real /health that checks DynamoDB connectivity.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

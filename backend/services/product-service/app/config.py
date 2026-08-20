@@ -24,3 +24,11 @@ OUTBOX_TABLE = os.environ.get("OUTBOX_TABLE", "ProductOutbox")
 
 # Used only by isolated pytest runs, which do not have an API Gateway event.
 AUTH_TEST_MODE = os.environ.get("AUTH_TEST_MODE", "false").lower() == "true"
+
+# Where admin-uploaded product images are stored (app/images.py) and the
+# public base URL they're served back from — the same CloudFront domain the
+# frontend itself is served from, routed to this bucket at /product-images/*.
+# Unset locally, same convention as EVENT_BUS_NAME: the upload endpoint has
+# nothing to presign against until these point at a deployed bucket.
+PRODUCT_IMAGES_BUCKET = os.environ.get("PRODUCT_IMAGES_BUCKET", "")
+PRODUCT_IMAGES_BASE_URL = os.environ.get("PRODUCT_IMAGES_BASE_URL", "")
