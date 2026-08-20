@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { createProduct, fetchAdminProducts, setProductActive, updateProduct, uploadProductImage } from "../api/products.js";
 import { addStock, fetchStock } from "../api/inventory.js";
-import { fetchAttentionOrders } from "../api/orders.js";
-import { fetchPayment, refundPayment } from "../api/payments.js";
 import { StatusBadge } from "./OrdersPage.jsx";
 import ProductImage from "./ProductImage.jsx";
+import Modal from "./Modal.jsx";
 import { formatPrice } from "../lib/currency.js";
 
 const blankProduct = { name: "", description: "", price: "", category: "", image_url: "" };
@@ -15,7 +14,6 @@ export default function AdminPanel({ idToken }) {
   const [products, setProducts] = useState([]);
   const [cursor, setCursor] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [attentionOrders, setAttentionOrders] = useState([]);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [stock, setStock] = useState(null);
   const [message, setMessage] = useState(null);
@@ -36,13 +34,9 @@ export default function AdminPanel({ idToken }) {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [productPage, stuck] = await Promise.all([
-        fetchAdminProducts({ limit: 20, idToken }),
-        fetchAttentionOrders(idToken),
-      ]);
+      const productPage = await fetchAdminProducts({ limit: 20, idToken });
       setProducts(productPage.items || []);
       setCursor(productPage.next_cursor || null);
-      setAttentionOrders(stuck || []);
     } catch (loadError) { setError(loadError.message); }
     finally { setLoading(false); }
   }, [idToken]);
@@ -85,17 +79,19 @@ export default function AdminPanel({ idToken }) {
       <h2 className="mt-1 text-3xl font-bold tracking-tight text-stone-900">Catalogue and operations</h2>
       {message && <p className="mt-5 rounded-md bg-brand-50 p-3 text-sm text-brand-800">{message}</p>}
       {error && <p className="mt-5 rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
+      {formOpen && (
+        <Modal title={editingProduct ? `Edit ${editingProduct.name}` : "Add product"} onClose={closeForm}>
+          <ProductEditor
+            idToken={idToken}
+            product={editingProduct}
+            onSaved={() => { setMessage("Product saved."); closeForm(); load(); }}
+            onCancel={closeForm}
+            onError={setError}
+          />
+        </Modal>
+      )}
       <div className="mt-7 grid gap-8 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-8">
-          {formOpen && (
-            <ProductEditor
-              idToken={idToken}
-              product={editingProduct}
-              onSaved={() => { setMessage("Product saved."); closeForm(); load(); }}
-              onCancel={closeForm}
-              onError={setError}
-            />
-          )}
           <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-lg font-bold text-stone-900">Product catalogue</h3>
@@ -162,7 +158,6 @@ export default function AdminPanel({ idToken }) {
         </div>
         <div className="space-y-8">
           <StockPanel product={selectedProduct} stock={stock} idToken={idToken} onUpdated={showStock} onMessage={setMessage} onError={setError} />
-          <AttentionOrders orders={attentionOrders} idToken={idToken} onError={setError} onMessage={setMessage} />
         </div>
       </div>
     </section>
@@ -205,7 +200,7 @@ function ProductEditor({ idToken, product, onSaved, onCancel, onError }) {
     } catch (saveError) { onError(saveError.message); }
   }
   return (
-    <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+    <section className="p-5 sm:p-6">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-lg font-bold text-stone-900">{product ? `Edit ${product.name}` : "Add product"}</h3>
         <button onClick={onCancel} className="text-sm font-medium text-stone-500 hover:text-stone-700">Cancel</button>
@@ -283,11 +278,4 @@ function StockPanel({ product, stock, idToken, onUpdated, onMessage, onError }) 
   if (!product) return <section className="rounded-xl border border-dashed border-stone-300 bg-white p-5 text-sm text-stone-500">Choose <strong>Stock</strong> beside a product to view or restock it.</section>;
   async function restock(event) { event.preventDefault(); onError(null); try { await addStock(product.id, quantity, idToken); onMessage(`Added ${quantity} units to ${product.name}.`); onUpdated(product); } catch (actionError) { onError(actionError.message); } }
   return <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm"><h3 className="text-lg font-bold text-stone-900">Stock: {product.name}</h3>{stock ? <p className="mt-3 text-sm text-stone-600"><strong>{stock.available_quantity}</strong> available · <strong>{stock.reserved_quantity}</strong> reserved</p> : <p className="mt-3 text-sm text-stone-500">No current stock record.</p>}<form onSubmit={restock} className="mt-4 flex gap-2"><label className="sr-only" htmlFor="stock-quantity">Units to add</label><input id="stock-quantity" type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} className="w-24 rounded-md border border-stone-300 px-3 py-2" /><button className="rounded-md bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Add stock</button></form></section>;
-}
-
-function AttentionOrders({ orders, idToken, onError, onMessage }) {
-  const [payment, setPayment] = useState(null);
-  async function inspectPayment(order) { if (!order.payment_id) return; onError(null); try { setPayment(await fetchPayment(order.payment_id, idToken)); } catch (lookupError) { onError(lookupError.message); } }
-  async function refund() { if (!payment) return; onError(null); try { const result = await refundPayment(payment.payment_id, idToken); setPayment(result); onMessage(`Refund result: ${result.status}.`); } catch (refundError) { onError(refundError.message); } }
-  return <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm"><h3 className="text-lg font-bold text-stone-900">Orders needing attention</h3>{orders.length === 0 ? <p className="mt-3 text-sm text-stone-500">No orders currently need reconciliation.</p> : <ul className="mt-3 space-y-3">{orders.map((order) => <li key={order.order_id} className="rounded-md bg-stone-50 p-3 text-sm"><div className="flex justify-between gap-2"><span className="min-w-0 break-all font-medium">{order.order_id}</span><span className="shrink-0"><StatusBadge status={order.status} /></span></div>{order.payment_id && <button onClick={() => inspectPayment(order)} className="mt-2 font-medium text-brand-700">Inspect payment</button>}</li>)}</ul>}{payment && <div className="mt-4 rounded-md bg-brand-50 p-3 text-sm"><p><strong>Payment:</strong> {payment.status}</p><p className="mt-1 text-stone-600">{payment.payment_id}</p>{payment.status === "SUCCEEDED" && <button onClick={refund} className="mt-3 font-medium text-brand-700">Issue refund</button>}</div>}</section>;
 }

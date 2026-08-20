@@ -36,11 +36,11 @@ resource "aws_ecr_lifecycle_policy" "websocket_service" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]
@@ -97,6 +97,8 @@ resource "aws_apigatewayv2_stage" "websocket" {
 # pattern, same as inventory-consumer sharing inventory-api's image) ----------
 
 data "aws_ecr_image" "websocket_service" {
+  count = contains(keys(var.deployment_image_uris), "websocket_service") ? 0 : 1
+
   repository_name = aws_ecr_repository.websocket_service.name
   image_tag       = "latest"
 }
@@ -143,7 +145,7 @@ resource "aws_lambda_function" "websocket_connect" {
   function_name = "${local.prefix}-websocket-connect"
   role          = aws_iam_role.websocket_connect.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.websocket_service.repository_url}@${data.aws_ecr_image.websocket_service.image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), "websocket_service") ? var.deployment_image_uris["websocket_service"] : "${aws_ecr_repository.websocket_service.repository_url}@${data.aws_ecr_image.websocket_service[0].image_digest}"
 
   image_config {
     command = ["app.connect.handler"]
@@ -169,7 +171,7 @@ resource "aws_lambda_function" "websocket_disconnect" {
   function_name = "${local.prefix}-websocket-disconnect"
   role          = aws_iam_role.websocket_connect.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.websocket_service.repository_url}@${data.aws_ecr_image.websocket_service.image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), "websocket_service") ? var.deployment_image_uris["websocket_service"] : "${aws_ecr_repository.websocket_service.repository_url}@${data.aws_ecr_image.websocket_service[0].image_digest}"
 
   image_config {
     command = ["app.disconnect.handler"]
@@ -472,7 +474,7 @@ resource "aws_lambda_function" "websocket_push_consumer" {
   function_name = "${local.prefix}-websocket-push-consumer"
   role          = aws_iam_role.websocket_push_consumer.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.websocket_service.repository_url}@${data.aws_ecr_image.websocket_service.image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), "websocket_service") ? var.deployment_image_uris["websocket_service"] : "${aws_ecr_repository.websocket_service.repository_url}@${data.aws_ecr_image.websocket_service[0].image_digest}"
 
   image_config {
     command = ["app.push_consumer.handler"]

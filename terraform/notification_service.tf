@@ -21,11 +21,11 @@ resource "aws_ecr_lifecycle_policy" "notification_service" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]
@@ -50,6 +50,14 @@ resource "aws_dynamodb_table" "notifications" {
   attribute {
     name = "event_id"
     type = "S"
+  }
+
+  # Notification rows are idempotency markers, not an audit ledger. They
+  # only need to outlive the source SQS queue (four days), so TTL prevents
+  # permanent growth from normal traffic and CP-059 receipt evidence.
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
   }
 
   point_in_time_recovery {
@@ -278,12 +286,11 @@ resource "aws_iam_role_policy" "notification_service" {
 
 # ---------- The function ----------
 
-# Same reasoning as http_service's own data.aws_ecr_image lookup: :latest is
-# a mutable tag, so referencing it directly means a plan can't tell a freshly
-# pushed image apart from an old one, and apply silently keeps running
-# whatever code the Lambda already had. Resolving it to a digest here makes
-# a new push something `terraform apply` actually deploys.
+# Local/manual bootstrap fallback only. CD supplies exact immutable image
+# URIs through deployment_image_uris for every service in a release.
 data "aws_ecr_image" "notification_service" {
+  count = contains(keys(var.deployment_image_uris), "notification_service") ? 0 : 1
+
   repository_name = aws_ecr_repository.notification_service.name
   image_tag       = "latest"
 }
@@ -292,7 +299,7 @@ resource "aws_lambda_function" "notification_service" {
   function_name = "${local.prefix}-notification-service"
   role          = aws_iam_role.notification_service.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.notification_service.repository_url}@${data.aws_ecr_image.notification_service.image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), "notification_service") ? var.deployment_image_uris["notification_service"] : "${aws_ecr_repository.notification_service.repository_url}@${data.aws_ecr_image.notification_service[0].image_digest}"
 
   image_config {
     command = ["app.handler.handler"]

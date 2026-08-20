@@ -49,3 +49,47 @@ variable "monthly_budget_limit_usd" {
     error_message = "monthly_budget_limit_usd must be greater than zero."
   }
 }
+
+variable "deployment_image_uris" {
+  description = <<-EOT
+    Exact immutable ECR image URIs, keyed by product/inventory/payment/order/
+    outbox_relay/notification_service/websocket_service. CD supplies every
+    service's currently deployed digest, replacing only the services it
+    built in this release with their newly pushed digest. This prevents an
+    unchanged service from falling back to a mutable :latest tag and being
+    unintentionally upgraded or rolled back during another service's deploy.
+    An omitted key resolves :latest only for local/manual bootstrap use.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
+variable "ecr_image_retention_count" {
+  description = "Number of ECR images retained per repository. Fifteen preserves several immutable CD releases for rollback without accumulating unlimited images."
+  type        = number
+  default     = 15
+
+  validation {
+    condition     = var.ecr_image_retention_count >= 5
+    error_message = "ecr_image_retention_count must be at least 5."
+  }
+}
+
+variable "github_repository" {
+  description = "GitHub owner/repository allowed to assume the CD role through OIDC."
+  type        = string
+  default     = "jashokainkaran/smartretailx-cloud2"
+}
+
+variable "github_deployment_environment" {
+  description = "GitHub Environment name required by the CD workflow and OIDC trust policy."
+  type        = string
+  default     = "dev"
+}
+
+variable "github_actions_oidc_provider_arn" {
+  description = "Existing GitHub OIDC provider ARN to reuse. Leave null for Terraform to create it."
+  type        = string
+  default     = null
+  nullable    = true
+}

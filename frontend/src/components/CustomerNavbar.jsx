@@ -14,6 +14,7 @@ export default function CustomerNavbar({ route, cart, user, navigate }) {
 
   const links = (
     <>
+      <NavButton active={route === "home"} onClick={() => go("home")}>Home</NavButton>
       <NavButton active={route === "catalogue"} onClick={() => go("catalogue")}>Shop</NavButton>
       <NavButton active={route === "cart"} onClick={() => go("cart")} icon={<CartIcon />} badge={itemCount}>Basket</NavButton>
       {user && <NavButton active={route === "orders"} onClick={() => go("orders")}>My orders</NavButton>}

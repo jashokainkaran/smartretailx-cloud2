@@ -43,11 +43,11 @@ resource "aws_ecr_lifecycle_policy" "payment_service" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]
@@ -60,11 +60,11 @@ resource "aws_ecr_lifecycle_policy" "order_service" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]
@@ -489,12 +489,13 @@ locals {
   }
 }
 
-# A tag such as :latest is mutable, so Terraform cannot tell that a newly
-# pushed image contains new application code. Resolving the tag to its digest
-# makes the Lambda code version explicit and lets a plan safely deploy the
-# image that was actually built and pushed before the apply.
+# Local/manual bootstrap fallback only. CD supplies exact immutable image
+# URIs through deployment_image_uris, so a release never depends on :latest.
 data "aws_ecr_image" "http_service" {
-  for_each = local.http_service_repositories
+  for_each = {
+    for key, repository in local.http_service_repositories : key => repository
+    if !contains(keys(var.deployment_image_uris), key)
+  }
 
   repository_name = each.value
   image_tag       = "latest"
@@ -506,7 +507,7 @@ resource "aws_lambda_function" "http_service" {
   function_name = "${local.prefix}-${each.key}-api"
   role          = each.value.role_arn
   package_type  = "Image"
-  image_uri     = "${each.value.ecr_url}@${data.aws_ecr_image.http_service[each.key].image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), each.key) ? var.deployment_image_uris[each.key] : "${each.value.ecr_url}@${data.aws_ecr_image.http_service[each.key].image_digest}"
 
   timeout     = 30
   memory_size = each.value.memory

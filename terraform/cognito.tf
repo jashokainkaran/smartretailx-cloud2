@@ -120,6 +120,25 @@ resource "aws_cognito_user_pool_client" "web" {
   }
 }
 
+# A non-browser client used only by the post-deploy CP-059 integration suite.
+# The SPA client intentionally uses Hosted UI PKCE; an unattended GitHub
+# runner cannot perform that interactive browser flow. This client has no
+# callback URLs and is not exposed to the frontend. It can obtain tokens only
+# for the two dedicated test users whose passwords live in GitHub Environment
+# secrets. Its tokens are accepted by the same API Gateway authorizer so the
+# test exercises the real JWT/RBAC path.
+resource "aws_cognito_user_pool_client" "integration_test" {
+  name         = "smartretailx-dev-integration-test"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  generate_secret                      = false
+  allowed_oauth_flows_user_pool_client = false
+  supported_identity_providers         = ["COGNITO"]
+  prevent_user_existence_errors        = "ENABLED"
+  enable_token_revocation              = true
+  explicit_auth_flows                  = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+}
+
 resource "aws_cognito_user_pool_domain" "main" {
   # For a Cognito-managed domain, Terraform needs only the prefix, not the
   # full https://...amazoncognito.com URL.

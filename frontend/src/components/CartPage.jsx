@@ -230,29 +230,31 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
         <h2 className="mt-1 text-3xl font-bold tracking-tight text-stone-900">Ready when you are</h2>
         <div className="mt-6 divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white">
           {cart.map((item) => (
-            <div key={item.id} className="flex items-center gap-4 p-4">
+            <div key={item.id} className="flex flex-wrap items-center gap-4 p-4">
               <ProductImage src={item.image_url} alt={item.name} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
-              <div className="min-w-0 flex-1">
+              <div className="min-w-[9rem] flex-1">
                 <p className="font-semibold text-stone-900">{item.name}</p>
                 <p className="text-sm text-stone-500">{formatPrice(item.price)} each</p>
               </div>
-              <label className="text-sm text-stone-600">
-                <span className="sr-only">Quantity for {item.name}</span>
-                <input
-                  type="number" min="1" max={stockByProductId[item.id] ?? 99} value={item.quantity}
-                  onChange={(event) => {
-                    const requested = Number(event.target.value) || 1;
-                    const cap = stockByProductId[item.id];
-                    setQuantity(item.id, typeof cap === "number" ? Math.min(requested, cap) : requested);
-                  }}
-                  className="w-16 rounded-md border border-stone-300 px-2 py-1.5"
-                />
-                {typeof stockByProductId[item.id] === "number" && (
-                  <span className="mt-1 block text-xs text-stone-400">{stockByProductId[item.id]} in stock</span>
-                )}
-              </label>
-              <p className="w-20 text-right font-semibold text-stone-900">{formatPrice(Number(item.price) * item.quantity)}</p>
-              <button onClick={() => removeItem(item.id)} className="text-sm font-medium text-red-700 hover:text-red-900">Remove</button>
+              <div className="ml-auto flex items-center gap-4">
+                <label className="text-sm text-stone-600">
+                  <span className="sr-only">Quantity for {item.name}</span>
+                  <input
+                    type="number" min="1" max={stockByProductId[item.id] ?? 99} value={item.quantity}
+                    onChange={(event) => {
+                      const requested = Number(event.target.value) || 1;
+                      const cap = stockByProductId[item.id];
+                      setQuantity(item.id, typeof cap === "number" ? Math.min(requested, cap) : requested);
+                    }}
+                    className="w-16 rounded-md border border-stone-300 px-2 py-1.5"
+                  />
+                  {typeof stockByProductId[item.id] === "number" && (
+                    <span className="mt-1 block text-xs text-stone-400">{stockByProductId[item.id]} in stock</span>
+                  )}
+                </label>
+                <p className="w-16 text-right font-semibold text-stone-900 sm:w-20">{formatPrice(Number(item.price) * item.quantity)}</p>
+                <button onClick={() => removeItem(item.id)} className="text-sm font-medium text-red-700 hover:text-red-900">Remove</button>
+              </div>
             </div>
           ))}
         </div>

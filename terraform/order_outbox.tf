@@ -135,7 +135,7 @@ resource "aws_lambda_function" "order_outbox_relay" {
   package_type  = "Image"
 
   # The SAME image as the product relay. Only OUTBOX_TABLE differs.
-  image_uri = "${aws_ecr_repository.outbox_relay.repository_url}:latest"
+  image_uri = contains(keys(var.deployment_image_uris), "outbox_relay") ? var.deployment_image_uris["outbox_relay"] : "${aws_ecr_repository.outbox_relay.repository_url}@${data.aws_ecr_image.outbox_relay[0].image_digest}"
 
   timeout     = 30
   memory_size = 256
