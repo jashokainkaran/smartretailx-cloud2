@@ -38,3 +38,6 @@ evidence/
 
 # Local tooling scratch data — not project content
 .playwright-mcp/
+
+# Local record used to prevent the deployed test-order script repeating a run
+scripts/.seed-state/

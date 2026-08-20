@@ -11,3 +11,7 @@ cognito-post-confirmation.zip
 
 # Saved plan files are local working artifacts, not source
 tfplan*
+
+# Backend configuration is machine/environment specific. The committed
+# backend.hcl.example documents the non-secret shape used by local and CI/CD.
+backend.hcl

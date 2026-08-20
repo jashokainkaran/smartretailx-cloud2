@@ -1,0 +1,11 @@
+# Copy this file to terraform/backend.hcl after running terraform/bootstrap/.
+# It identifies remote state only; it must never contain AWS credentials.
+#
+# No dynamodb_table: this project uses Terraform's native S3 state locking
+# (use_lockfile, requires Terraform >= 1.10) instead of a separate
+# DynamoDB lock table — one fewer resource for the same guarantee.
+bucket       = "smartretailx-dev-ACCOUNT_ID-terraform-state"
+key          = "dev/terraform.tfstate"
+region       = "eu-west-1"
+encrypt      = true
+use_lockfile = true
