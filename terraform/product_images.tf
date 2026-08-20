@@ -41,7 +41,7 @@ resource "aws_s3_bucket_cors_configuration" "product_images" {
 
   cors_rule {
     allowed_methods = ["POST"]
-    allowed_origins = [var.frontend_origin]
+    allowed_origins = [local.frontend_origin]
     allowed_headers = ["*"]
     max_age_seconds = 3000
   }

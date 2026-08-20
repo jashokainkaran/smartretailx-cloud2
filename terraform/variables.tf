@@ -16,9 +16,10 @@ variable "project_name" {
 }
 
 variable "frontend_origin" {
-  description = "Origin allowed to call the APIs from a browser. Set to the CloudFront domain once the frontend is deployed; localhost during development. Not '*', because every service sends allow_credentials, and a wildcard origin with credentials is rejected by browsers."
+  description = "Override the origin allowed to call the APIs from a browser — e.g. http://localhost:5173 for a local frontend dev server talking to real AWS. Leave unset (null) to use the actual deployed CloudFront domain, computed automatically (local.frontend_origin in lambda_http_services.tf). Not '*', because every service sends allow_credentials, and a wildcard origin with credentials is rejected by browsers."
   type        = string
-  default     = "http://localhost:5173"
+  default     = null
+  nullable    = true
 }
 
 variable "dlq_max_receive_count" {

@@ -365,6 +365,14 @@ resource "aws_iam_role_policy" "order_api" {
 # service quietly keeps another's environment.
 
 locals {
+  # var.frontend_origin is only ever set to deliberately override this (e.g.
+  # a local frontend dev server on localhost talking to real AWS). Nothing
+  # else — not CD, not a plain local apply — has to remember to pass it: the
+  # real deployed origin is already known within this same apply.
+  frontend_origin = coalesce(var.frontend_origin, "https://${aws_cloudfront_distribution.main.domain_name}")
+}
+
+locals {
   http_services = {
     product = {
       ecr_url  = aws_ecr_repository.product_service.repository_url
@@ -374,7 +382,7 @@ locals {
       environment = {
         PRODUCTS_TABLE = aws_dynamodb_table.products.name
         OUTBOX_TABLE   = aws_dynamodb_table.product_outbox.name
-        CORS_ORIGINS   = var.frontend_origin
+        CORS_ORIGINS   = local.frontend_origin
 
         # Backs POST /api/v1/products/admin/image-upload-url (app/images.py).
         # The base URL is the SAME CloudFront domain everything else uses
@@ -392,7 +400,7 @@ locals {
       in_vpc   = true
       environment = {
         INVENTORY_TABLE = aws_dynamodb_table.inventory.name
-        CORS_ORIGINS    = var.frontend_origin
+        CORS_ORIGINS    = local.frontend_origin
 
         # CP-020's best-effort StockLevelChanged publish. Without this,
         # events.publish_stock_changed() has nothing to publish to and
@@ -409,7 +417,7 @@ locals {
       environment = {
         PAYMENTS_TABLE   = aws_dynamodb_table.payments.name
         PAYMENT_PROVIDER = "mock"
-        CORS_ORIGINS     = var.frontend_origin
+        CORS_ORIGINS     = local.frontend_origin
       }
     }
 
@@ -444,7 +452,7 @@ locals {
       environment = {
         ORDERS_TABLE       = aws_dynamodb_table.orders.name
         ORDER_OUTBOX_TABLE = aws_dynamodb_table.order_outbox.name
-        CORS_ORIGINS       = var.frontend_origin
+        CORS_ORIGINS       = local.frontend_origin
 
         # The saga calls the other services through the SAME public gateway
         # the frontend uses, so one code path serves local and deployed
