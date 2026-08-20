@@ -86,7 +86,10 @@ jobs:
           exit 1
 
       - name: Run pytest
-        run: pytest -q
+        # pytest places the tests directory first on its import path in the
+        # GitHub runner. Explicitly include the service root so each test can
+        # import its sibling `app` package (for example `from app import handler`).
+        run: PYTHONPATH=. pytest -q
 
   # Run component tests, lint and a production build for the React app.
   frontend-build:

@@ -1,4 +1,4 @@
-"""CP-059: small, repeatable integration test against the deployed API.
+"""Small, repeatable deployed API integration test.
 
 This is intentionally an API test rather than a browser E2E or k6 workload.
 It makes two controlled test orders at most (one COD success and one mock-card
@@ -20,11 +20,12 @@ from urllib import error, parse, request
 from deployed_api import DEFAULT_API_BASE_URL, normalise_api_base_url
 
 
-# This fixture belongs to CP-059, not to a human catalogue administrator.
+# This fixture belongs to the deployed API integration test, not to a human
+# catalogue administrator.
 # It is reactivated for the test and deactivated again by the CD cleanup
 # step. Keeping one identifiable fixture is safer than relying on a demo
 # product somebody may edit or remove during normal manual testing.
-FIXTURE_MARKER = "[SMARTRETAILX-INTEGRATION]:cp059"
+FIXTURE_MARKER = "[SMARTRETAILX-INTEGRATION]:deployed-api-integration"
 FIXTURE_PRODUCT = {
     "name": "SmartRetailX integration-test fixture",
     "description": FIXTURE_MARKER,
@@ -35,7 +36,7 @@ FIXTURE_STOCK_FLOOR = 10
 
 
 class IntegrationFailure(RuntimeError):
-    """A deployed behaviour did not match the CP-059 expectation."""
+    """A deployed behaviour did not match an integration-test expectation."""
 
 
 def api_call(
@@ -81,7 +82,7 @@ def require_status(status: int, expected: int, check: str) -> None:
 
 
 def find_fixture_product(api_base_url: str, admin_token: str) -> dict[str, Any] | None:
-    """Find the CP-059 product through the protected admin catalogue."""
+    """Find the test-owned product through the protected admin catalogue."""
     cursor: str | None = None
     for _ in range(20):
         path = "/api/v1/products/admin?limit=100"
@@ -109,7 +110,7 @@ def ensure_fixture_product(api_base_url: str, admin_token: str) -> dict[str, Any
             token=admin_token,
             body=FIXTURE_PRODUCT,
         )
-        require_status(status, 201, "create CP-059 fixture product")
+        require_status(status, 201, "create integration-test fixture product")
     else:
         status, product = api_call(
             api_base_url,
@@ -118,7 +119,7 @@ def ensure_fixture_product(api_base_url: str, admin_token: str) -> dict[str, Any
             token=admin_token,
             body=FIXTURE_PRODUCT,
         )
-        require_status(status, 200, "reset CP-059 fixture product")
+        require_status(status, 200, "reset integration-test fixture product")
 
     if not product.get("active", True):
         status, product = api_call(
@@ -127,7 +128,7 @@ def ensure_fixture_product(api_base_url: str, admin_token: str) -> dict[str, Any
             method="PATCH",
             token=admin_token,
         )
-        require_status(status, 200, "activate CP-059 fixture product")
+        require_status(status, 200, "activate integration-test fixture product")
 
     return product
 
@@ -147,7 +148,7 @@ def ensure_fixture_stock(api_base_url: str, admin_token: str, product_id: str) -
         method="POST",
         token=admin_token,
     )
-    require_status(status, 200, "prepare CP-059 fixture stock")
+    require_status(status, 200, "prepare integration-test fixture stock")
 
 
 def require_fixture_in_public_catalogue(api_base_url: str, product_id: str) -> None:
@@ -164,7 +165,7 @@ def require_fixture_in_public_catalogue(api_base_url: str, product_id: str) -> N
         cursor = page.get("next_cursor")
         if not cursor:
             break
-    raise IntegrationFailure("Activated CP-059 fixture product was absent from the public catalogue.")
+    raise IntegrationFailure("Activated integration-test fixture product was absent from the public catalogue.")
 
 
 def write_cleanup_manifest(path: str | None, manifest: dict[str, Any]) -> None:
@@ -252,7 +253,7 @@ def create_or_reuse_order(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the CP-059 deployed API integration suite.")
+    parser = argparse.ArgumentParser(description="Run the deployed API integration suite.")
     parser.add_argument("--run-id", required=True, help="Stable CI run identifier, e.g. GitHub run ID.")
     parser.add_argument("--customer-email", required=True)
     parser.add_argument("--api-base", default=os.getenv("SMARTRETAILX_API_BASE_URL", DEFAULT_API_BASE_URL))
@@ -268,7 +269,7 @@ def main() -> int:
         raise IntegrationFailure("Dedicated customer and admin ID tokens must be supplied through the environment.")
 
     api_base_url = normalise_api_base_url(args.api_base)
-    run_marker = f"SmartRetailX CP-059 {args.run_id}"
+    run_marker = f"SmartRetailX Deployed API Integration {args.run_id}"
     cleanup_manifest: dict[str, Any] = {"fixture_product_id": None, "orders": []}
     write_cleanup_manifest(args.cleanup_manifest, cleanup_manifest)
     try:
@@ -343,10 +344,10 @@ def main() -> int:
         if declined_order.get("status") != "FAILED":
             raise IntegrationFailure("Forced mock-card decline did not produce a FAILED order.")
 
-        print("CP-059 passed: public access, Cognito JWT/RBAC, COD, admin operations and forced decline verified.")
+        print("Deployed API integration test passed: public access, Cognito JWT/RBAC, COD, admin operations and forced decline verified.")
         return 0
     except IntegrationFailure as exc:
-        print(f"CP-059 failed: {exc}", file=sys.stderr)
+        print(f"Deployed API integration test failed: {exc}", file=sys.stderr)
         return 1
 
 

@@ -294,7 +294,7 @@ jobs:
           curl --fail --show-error --retry 3 --retry-delay 5 "${site_url}/"
           curl --fail --show-error --retry 3 --retry-delay 5 "${api_url}/api/v1/products?limit=1"
 
-      # CP-059: prove the deployment through the real Cognito -> API Gateway
+      # Prove the deployment through the real Cognito -> API Gateway
       # -> Lambda -> DynamoDB path. These are dedicated test accounts, never
       # a developer's personal accounts. Tokens are masked and exist only for
       # this job; passwords are GitHub Environment secrets and never echoed.
@@ -338,7 +338,7 @@ jobs:
           echo "SMARTRETAILX_TEST_CUSTOMER_ID_TOKEN=$customer_token" >> "$GITHUB_ENV"
           echo "SMARTRETAILX_TEST_ADMIN_ID_TOKEN=$admin_token" >> "$GITHUB_ENV"
 
-      - name: CP-059 deployed API integration test
+      - name: Deployed API integration test
         id: integration_test
         run: |
           api_url="$(terraform -chdir=terraform output -raw api_base_url)"
@@ -346,21 +346,21 @@ jobs:
             --run-id "github-${{ github.run_id }}" \
             --customer-email "${{ vars.COGNITO_TEST_CUSTOMER_EMAIL }}" \
             --api-base "$api_url" \
-            --cleanup-manifest "$RUNNER_TEMP/cp059-cleanup.json"
+            --cleanup-manifest "$RUNNER_TEMP/deployed-api-integration-cleanup.json"
 
       # API-level deletion is deliberately not exposed in the application:
       # production orders are financial/audit records. The CD role instead
-      # removes only IDs written by its own CP-059 manifest, even if the test
+      # removes only IDs written by its own test manifest, even if the test
       # failed halfway through. The fixture product remains as one clearly
       # marked, inactive record; its inventory is reset to a known level so
       # it never appears as low stock or affects a human catalogue.
-      - name: Clean up CP-059 test-owned DynamoDB data
+      - name: Clean up deployed API integration test data
         id: integration_cleanup
         if: always() && steps.terraform_apply.outcome == 'success'
         run: |
-          manifest="$RUNNER_TEMP/cp059-cleanup.json"
+          manifest="$RUNNER_TEMP/deployed-api-integration-cleanup.json"
           if [ ! -s "$manifest" ]; then
-            echo "No CP-059 cleanup manifest was produced."
+            echo "No deployed API integration test cleanup manifest was produced."
             exit 0
           fi
 
@@ -400,7 +400,7 @@ jobs:
       # Only reverts the Lambda IMAGES to what they ran before this deploy
       # — not the Terraform-managed infrastructure itself. Once Terraform
       # has applied, ANY later failure leaves a changed backend unverified:
-      # frontend packaging/upload, smoke, token acquisition, CP-059 or test
+      # frontend packaging/upload, smoke, token acquisition, integration test or test
       # cleanup. `failure()` deliberately covers all of them. A bad
       # infrastructure change still needs a deliberate fix-forward commit;
       # Terraform has no safe generic "revert" operation the way pointing a
