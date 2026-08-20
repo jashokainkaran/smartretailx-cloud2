@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [
+  "**/.venv/**",
+  "**/venv/**",
+  # Legacy one-off local table bootstrap scripts modify sys.path before
+  # importing a service package; modernising them is separate from the CI/CD
+  # change and would not improve deployed code quality.
+  "scripts/create_*_table.py",
+  "scripts/seed_inventory.py",
+]
+
+[tool.ruff.lint]
+# Begin with Python correctness rules in CI. FastAPI dependency declarations
+# intentionally use call expressions in defaults, and import/type-style
+# cleanup can be introduced separately without turning this first lint gate
+# into a large unrelated reformat of the coursework codebase.
+select = ["E4", "E7", "E9", "F"]
