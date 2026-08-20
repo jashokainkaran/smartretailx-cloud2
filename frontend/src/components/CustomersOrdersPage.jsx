@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchAllOrdersAdmin, updateDeliveryStatus } from "../api/orders.js";
+import { fetchAllOrdersAdmin, fetchAttentionOrders, updateDeliveryStatus } from "../api/orders.js";
+import { fetchPayment, refundPayment } from "../api/payments.js";
 import { StatusBadge } from "./OrdersPage.jsx";
 import { formatPrice } from "../lib/currency.js";
 
@@ -35,13 +36,18 @@ export default function CustomersOrdersPage({ idToken }) {
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
+  const [attentionOrders, setAttentionOrders] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const page = await fetchAllOrdersAdmin({ limit: 50, idToken });
+      const [page, stuck] = await Promise.all([
+        fetchAllOrdersAdmin({ limit: 50, idToken }),
+        fetchAttentionOrders(idToken),
+      ]);
       setOrders(page.items || []);
       setCursor(page.next_cursor || null);
+      setAttentionOrders(stuck || []);
     } catch (loadError) { setError(loadError.message); }
     finally { setLoading(false); }
   }, [idToken]);
@@ -78,6 +84,10 @@ export default function CustomersOrdersPage({ idToken }) {
 
       {message && <p className="mt-5 rounded-md bg-brand-50 p-3 text-sm text-brand-800">{message}</p>}
       {error && <p className="mt-5 rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
+
+      <div className="mt-6">
+        <AttentionOrders orders={attentionOrders} idToken={idToken} onError={setError} onMessage={setMessage} />
+      </div>
 
       {groups.length === 0 ? (
         <p className="mt-8 rounded-xl border border-dashed border-stone-300 bg-white p-10 text-center text-stone-500">
@@ -182,4 +192,14 @@ function OrderRow({ order, onChangeDelivery }) {
       )}
     </div>
   );
+}
+
+// Orders in PAYMENT_UNKNOWN, STOCK_UNKNOWN or COMPENSATION_FAILED need a
+// human to reconcile them — this is the only place in the admin UI that can
+// inspect a payment or issue a refund.
+function AttentionOrders({ orders, idToken, onError, onMessage }) {
+  const [payment, setPayment] = useState(null);
+  async function inspectPayment(order) { if (!order.payment_id) return; onError(null); try { setPayment(await fetchPayment(order.payment_id, idToken)); } catch (lookupError) { onError(lookupError.message); } }
+  async function refund() { if (!payment) return; onError(null); try { const result = await refundPayment(payment.payment_id, idToken); setPayment(result); onMessage(`Refund result: ${result.status}.`); } catch (refundError) { onError(refundError.message); } }
+  return <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm"><h3 className="text-lg font-bold text-stone-900">Orders needing attention</h3>{orders.length === 0 ? <p className="mt-3 text-sm text-stone-500">No orders currently need reconciliation.</p> : <ul className="mt-3 space-y-3">{orders.map((order) => <li key={order.order_id} className="rounded-md bg-stone-50 p-3 text-sm"><div className="flex justify-between gap-2"><span className="min-w-0 break-all font-medium">{order.order_id}</span><span className="shrink-0"><StatusBadge status={order.status} /></span></div>{order.payment_id && <button onClick={() => inspectPayment(order)} className="mt-2 font-medium text-brand-700">Inspect payment</button>}</li>)}</ul>}{payment && <div className="mt-4 rounded-md bg-brand-50 p-3 text-sm"><p><strong>Payment:</strong> {payment.status}</p><p className="mt-1 text-stone-600">{payment.payment_id}</p>{payment.status === "SUCCEEDED" && <button onClick={refund} className="mt-3 font-medium text-brand-700">Issue refund</button>}</div>}</section>;
 }

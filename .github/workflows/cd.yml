@@ -1,0 +1,422 @@
+# Automatic deploy for the single cost-controlled dev environment. Pushing
+# to main triggers this directly — there is no human approval gate (see
+# ADR-042 for why: this is a solo-developer, single-account, dev-only setup,
+# so the real safety boundary is WHO can trigger a deploy at all — only
+# pushes to main in this exact repository — not a manual click on top of
+# that). CI is still a hard, required gate: nothing deploys if it fails.
+name: SmartRetailX CD — deploy dev
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_reason:
+        description: "What is being deployed and why? (only used for a manual run)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: smartretailx-dev-deployment
+  cancel-in-progress: false
+
+# The only authoritative service map in this workflow. A service's image
+# repository, Terraform key and rollback scope must change together, so they
+# live in one JSON value rather than three independent bash maps.
+env:
+  SERVICE_CATALOG: >-
+    [{"filter":"product_service","tf_key":"product","directory":"product-service","primary_function":"smartretailx-dev-product-api","rollback_functions":["smartretailx-dev-product-api"]},{"filter":"inventory_service","tf_key":"inventory","directory":"inventory-service","primary_function":"smartretailx-dev-inventory-api","rollback_functions":["smartretailx-dev-inventory-api","smartretailx-dev-inventory-consumer"]},{"filter":"payment_service","tf_key":"payment","directory":"payment-service","primary_function":"smartretailx-dev-payment-api","rollback_functions":["smartretailx-dev-payment-api"]},{"filter":"order_service","tf_key":"order","directory":"order-service","primary_function":"smartretailx-dev-order-api","rollback_functions":["smartretailx-dev-order-api"]},{"filter":"outbox_relay","tf_key":"outbox_relay","directory":"outbox-relay","primary_function":"smartretailx-dev-outbox-relay","rollback_functions":["smartretailx-dev-outbox-relay","smartretailx-dev-order-outbox-relay"]},{"filter":"notification_service","tf_key":"notification_service","directory":"notification-service","primary_function":"smartretailx-dev-notification-service","rollback_functions":["smartretailx-dev-notification-service"]},{"filter":"websocket_service","tf_key":"websocket_service","directory":"websocket-service","primary_function":"smartretailx-dev-websocket-connect","rollback_functions":["smartretailx-dev-websocket-connect","smartretailx-dev-websocket-disconnect","smartretailx-dev-websocket-push-consumer"]}]
+
+jobs:
+  verify:
+    name: Required CI quality gate
+    uses: ./.github/workflows/ci.yml
+
+  # Detects which parts of the repo actually changed, so the deploy job
+  # below can skip rebuilding/pushing every service image on, say, a
+  # frontend-only or docs-only push. terraform apply itself doesn't need
+  # this — it's already a no-op when nothing in a given resource changed —
+  # only the slow Docker builds and the frontend sync benefit from skipping.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      service_manifest: ${{ steps.manifest.outputs.json }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      terraform: ${{ steps.filter.outputs.terraform }}
+      release: ${{ steps.filter.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            product_service:
+              - 'backend/services/product-service/**'
+            inventory_service:
+              - 'backend/services/inventory-service/**'
+            payment_service:
+              - 'backend/services/payment-service/**'
+            order_service:
+              - 'backend/services/order-service/**'
+            outbox_relay:
+              - 'backend/services/outbox-relay/**'
+            notification_service:
+              - 'backend/services/notification-service/**'
+            websocket_service:
+              - 'backend/services/websocket-service/**'
+            frontend:
+              - 'frontend/**'
+            terraform:
+              - 'terraform/**'
+            release:
+              - 'backend/services/**'
+              - 'frontend/**'
+              - 'terraform/**'
+              - '.github/workflows/**'
+              - 'scripts/deployed_*.py'
+
+      - name: Build the service release manifest
+        id: manifest
+        env:
+          FILTER_RESULTS: >-
+            {"product_service":"${{ steps.filter.outputs.product_service }}","inventory_service":"${{ steps.filter.outputs.inventory_service }}","payment_service":"${{ steps.filter.outputs.payment_service }}","order_service":"${{ steps.filter.outputs.order_service }}","outbox_relay":"${{ steps.filter.outputs.outbox_relay }}","notification_service":"${{ steps.filter.outputs.notification_service }}","websocket_service":"${{ steps.filter.outputs.websocket_service }}"}
+        run: |
+          manifest="$(jq -cn \
+            --argjson services "$SERVICE_CATALOG" \
+            --argjson changes "$FILTER_RESULTS" \
+            '$services | map(. + {changed: ($changes[.filter] == "true")})')"
+          echo "json=$manifest" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy committed release to dev
+    needs: [verify, changes]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.release == 'true'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: dev
+
+    env:
+      AWS_REGION: eu-west-1
+      TF_VAR_environment: dev
+      TF_VAR_notification_sender_email: ${{ vars.NOTIFICATION_SENDER_EMAIL }}
+      TF_VAR_monthly_budget_limit_usd: ${{ vars.MONTHLY_BUDGET_LIMIT_USD }}
+      # deployment_image_uris is set below. CD passes the exact deployed
+      # digest for every service and substitutes a new digest only where this
+      # release built an image; a shared mutable tag would be unsafe here.
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Download the exact commit that passed CI
+        uses: actions/checkout@v4
+
+      - name: Configure short-lived AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: smartretailx-cd-${{ github.run_id }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Initialise the shared Terraform state
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Validate deployment inputs
+        working-directory: terraform
+        run: |
+          test -n "$TF_VAR_notification_sender_email"
+          test -n "$TF_VAR_monthly_budget_limit_usd"
+          terraform fmt -check -recursive
+          terraform validate
+
+      # Capture every service's exact current image URI before anything
+      # changes. Terraform receives this whole map, then replaces only
+      # changed-service entries with newly built ECR digests. This avoids an
+      # unchanged service silently resolving mutable :latest during another
+      # service's release. The per-function map is also used for rollback.
+      - name: Record deployed image digests and rollback points
+        id: pre_deploy
+        run: |
+          services='${{ needs.changes.outputs.service_manifest }}'
+          previous_images="{}"
+          current_service_images="{}"
+          while IFS= read -r service; do
+            function_name="$(jq -r '.primary_function' <<< "$service")"
+            tf_key="$(jq -r '.tf_key' <<< "$service")"
+            uri=$(aws lambda get-function --function-name "$function_name" --query 'Code.ImageUri' --output text)
+            if [ -z "$uri" ] || [ "$uri" = "None" ]; then
+              echo "Could not determine the currently deployed image for $function_name." >&2
+              exit 1
+            fi
+            current_service_images=$(echo "$current_service_images" | jq --arg key "$tf_key" --arg uri "$uri" '.[$key] = $uri')
+
+            if [ "$(jq -r '.changed' <<< "$service")" != "true" ]; then continue; fi
+            while IFS= read -r fn; do
+              uri=$(aws lambda get-function --function-name "$fn" --query 'Code.ImageUri' --output text 2>/dev/null || echo "")
+              if [ -n "$uri" ] && [ "$uri" != "None" ]; then
+                previous_images=$(echo "$previous_images" | jq --arg fn "$fn" --arg uri "$uri" '.[$fn] = $uri')
+              fi
+            done < <(jq -r '.rollback_functions[]' <<< "$service")
+          done < <(jq -c '.[]' <<< "$services")
+          echo "current_service_images=$(echo "$current_service_images" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "previous_images=$(echo "$previous_images" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+      - name: Log Docker in to ECR
+        id: ecr
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          echo "registry=${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_OUTPUT"
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+      # Only builds/pushes images for services whose files actually changed
+      # in this push — not every service, every time.
+      - name: Build and push changed service images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          services='${{ needs.changes.outputs.service_manifest }}'
+          while IFS= read -r service; do
+            directory="$(jq -r '.directory' <<< "$service")"
+            if [ "$(jq -r '.changed' <<< "$service")" != "true" ]; then
+              echo "Skipping $directory — unchanged"
+              continue
+            fi
+            image="${REGISTRY}/smartretailx-dev-${directory}:${GITHUB_SHA}"
+            docker build --provenance=false --platform linux/amd64 \
+              --tag "$image" "backend/services/${directory}"
+            docker push "$image"
+          done < <(jq -c '.[]' <<< "$services")
+
+      - name: Set exact per-service image URIs for Terraform
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          services='${{ needs.changes.outputs.service_manifest }}'
+          image_uris='${{ steps.pre_deploy.outputs.current_service_images }}'
+          while IFS= read -r service; do
+            if [ "$(jq -r '.changed' <<< "$service")" == "true" ]; then
+              directory="$(jq -r '.directory' <<< "$service")"
+              tf_key="$(jq -r '.tf_key' <<< "$service")"
+              digest=$(aws ecr describe-images \
+                --repository-name "smartretailx-dev-${directory}" \
+                --image-ids imageTag="$GITHUB_SHA" \
+                --query 'imageDetails[0].imageDigest' \
+                --output text)
+              if [ -z "$digest" ] || [ "$digest" = "None" ]; then
+                echo "Could not resolve immutable ECR digest for $directory." >&2
+                exit 1
+              fi
+              image_uris=$(echo "$image_uris" | jq \
+                --arg key "$tf_key" \
+                --arg uri "${REGISTRY}/smartretailx-dev-${directory}@${digest}" \
+                '.[$key] = $uri')
+            fi
+          done < <(jq -c '.[]' <<< "$services")
+          echo "TF_VAR_deployment_image_uris=$(echo "$image_uris" | jq -c .)" >> "$GITHUB_ENV"
+
+      - name: Create the reviewed Terraform plan
+        working-directory: terraform
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Apply exactly the reviewed Terraform plan
+        id: terraform_apply
+        working-directory: terraform
+        run: terraform apply -input=false tfplan
+
+      - name: Install Node.js
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.terraform == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Runs whenever the frontend itself changed OR Terraform changed
+      # (a Terraform change can alter a live output — API URL, WebSocket
+      # URL, Cognito domain/client id — that the build bakes in via
+      # VITE_* env vars, so those need to stay in sync even without a
+      # frontend code change).
+      - name: Build frontend with live Terraform outputs
+        id: frontend_build
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.terraform == 'true'
+        working-directory: frontend
+        run: |
+          npm ci
+          export VITE_API_BASE_URL="$(terraform -chdir=../terraform output -raw site_url)"
+          export VITE_WS_BASE_URL="$(terraform -chdir=../terraform output -raw websocket_url)"
+          export VITE_COGNITO_DOMAIN="$(terraform -chdir=../terraform output -raw cognito_domain)"
+          export VITE_COGNITO_CLIENT_ID="$(terraform -chdir=../terraform output -raw cognito_web_client_id)"
+          npm run build
+
+      - name: Upload frontend and invalidate CloudFront
+        id: frontend_upload
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.terraform == 'true'
+        run: |
+          bucket="$(terraform -chdir=terraform output -raw frontend_bucket)"
+          distribution_id="$(terraform -chdir=terraform output -raw cloudfront_distribution_id)"
+          aws s3 sync frontend/dist "s3://${bucket}" --delete
+          invalidation_id="$(aws cloudfront create-invalidation \
+            --distribution-id "$distribution_id" \
+            --paths '/*' \
+            --query 'Invalidation.Id' \
+            --output text)"
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$distribution_id" \
+            --id "$invalidation_id"
+
+      # A network blip against real infra is not the same as a real bug —
+      # retried a few times before this step is allowed to fail the run.
+      - name: Cost-controlled public smoke test
+        id: smoke_test
+        run: |
+          site_url="$(terraform -chdir=terraform output -raw site_url)"
+          api_url="$(terraform -chdir=terraform output -raw api_base_url)"
+          curl --fail --show-error --retry 3 --retry-delay 5 "${site_url}/"
+          curl --fail --show-error --retry 3 --retry-delay 5 "${api_url}/api/v1/products?limit=1"
+
+      # Prove the deployment through the real Cognito -> API Gateway
+      # -> Lambda -> DynamoDB path. These are dedicated test accounts, never
+      # a developer's personal accounts. Tokens are masked and exist only for
+      # this job; passwords are GitHub Environment secrets and never echoed.
+      - name: Obtain short-lived Cognito integration-test tokens
+        id: integration_tokens
+        env:
+          CUSTOMER_EMAIL: ${{ vars.COGNITO_TEST_CUSTOMER_EMAIL }}
+          CUSTOMER_PASSWORD: ${{ secrets.COGNITO_TEST_CUSTOMER_PASSWORD }}
+          ADMIN_EMAIL: ${{ vars.COGNITO_TEST_ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.COGNITO_TEST_ADMIN_PASSWORD }}
+        run: |
+          test -n "$CUSTOMER_EMAIL"
+          test -n "$CUSTOMER_PASSWORD"
+          test -n "$ADMIN_EMAIL"
+          test -n "$ADMIN_PASSWORD"
+          client_id="$(terraform -chdir=terraform output -raw cognito_integration_test_client_id)"
+          customer_request="$(jq -n \
+            --arg client_id "$client_id" \
+            --arg username "$CUSTOMER_EMAIL" \
+            --arg password "$CUSTOMER_PASSWORD" \
+            '{AuthFlow: "USER_PASSWORD_AUTH", ClientId: $client_id, AuthParameters: {USERNAME: $username, PASSWORD: $password}}')"
+          admin_request="$(jq -n \
+            --arg client_id "$client_id" \
+            --arg username "$ADMIN_EMAIL" \
+            --arg password "$ADMIN_PASSWORD" \
+            '{AuthFlow: "USER_PASSWORD_AUTH", ClientId: $client_id, AuthParameters: {USERNAME: $username, PASSWORD: $password}}')"
+          customer_token="$(aws cognito-idp initiate-auth \
+            --cli-input-json "$customer_request" \
+            --query 'AuthenticationResult.IdToken' \
+            --output text)"
+          admin_token="$(aws cognito-idp initiate-auth \
+            --cli-input-json "$admin_request" \
+            --query 'AuthenticationResult.IdToken' \
+            --output text)"
+          if [ -z "$customer_token" ] || [ "$customer_token" = "None" ] || [ -z "$admin_token" ] || [ "$admin_token" = "None" ]; then
+            echo "Cognito did not return both test-user ID tokens." >&2
+            exit 1
+          fi
+          echo "::add-mask::$customer_token"
+          echo "::add-mask::$admin_token"
+          echo "SMARTRETAILX_TEST_CUSTOMER_ID_TOKEN=$customer_token" >> "$GITHUB_ENV"
+          echo "SMARTRETAILX_TEST_ADMIN_ID_TOKEN=$admin_token" >> "$GITHUB_ENV"
+
+      - name: Deployed API integration test
+        id: integration_test
+        run: |
+          api_url="$(terraform -chdir=terraform output -raw api_base_url)"
+          python scripts/deployed_integration_test.py \
+            --run-id "github-${{ github.run_id }}" \
+            --customer-email "${{ vars.COGNITO_TEST_CUSTOMER_EMAIL }}" \
+            --api-base "$api_url" \
+            --cleanup-manifest "$RUNNER_TEMP/deployed-api-integration-cleanup.json"
+
+      # API-level deletion is deliberately not exposed in the application:
+      # production orders are financial/audit records. The CD role instead
+      # removes only IDs written by its own test manifest, even if the test
+      # failed halfway through. The fixture product remains as one clearly
+      # marked, inactive record; its inventory is reset to a known level so
+      # it never appears as low stock or affects a human catalogue.
+      - name: Clean up deployed API integration test data
+        id: integration_cleanup
+        if: always() && steps.terraform_apply.outcome == 'success'
+        run: |
+          manifest="$RUNNER_TEMP/deployed-api-integration-cleanup.json"
+          if [ ! -s "$manifest" ]; then
+            echo "No deployed API integration test cleanup manifest was produced."
+            exit 0
+          fi
+
+          orders_table="$(terraform -chdir=terraform output -raw orders_table_name)"
+          payments_table="$(terraform -chdir=terraform output -raw payments_table_name)"
+          products_table="$(terraform -chdir=terraform output -raw products_table_name)"
+          inventory_table="$(terraform -chdir=terraform output -raw inventory_table_name)"
+
+          while IFS= read -r record; do
+            order_id="$(jq -r '.order_id' <<< "$record")"
+            payment_id="$(jq -r '.payment_id // empty' <<< "$record")"
+            aws dynamodb delete-item \
+              --table-name "$orders_table" \
+              --key "$(jq -cn --arg id "$order_id" '{order_id: {S: $id}}')"
+            if [ -n "$payment_id" ]; then
+              aws dynamodb delete-item \
+                --table-name "$payments_table" \
+                --key "$(jq -cn --arg id "$payment_id" '{payment_id: {S: $id}}')"
+            fi
+          done < <(jq -c '.orders[]?' "$manifest")
+
+          fixture_product_id="$(jq -r '.fixture_product_id // empty' "$manifest")"
+          if [ -n "$fixture_product_id" ]; then
+            aws dynamodb update-item \
+              --table-name "$products_table" \
+              --key "$(jq -cn --arg id "$fixture_product_id" '{id: {S: $id}}')" \
+              --update-expression 'SET #active = :inactive' \
+              --expression-attribute-names '{"#active":"active"}' \
+              --expression-attribute-values '{":inactive":{"BOOL":false}}'
+            aws dynamodb update-item \
+              --table-name "$inventory_table" \
+              --key "$(jq -cn --arg id "$fixture_product_id" '{product_id: {S: $id}}')" \
+              --update-expression 'SET available_quantity = :available, reserved_quantity = :reserved' \
+              --expression-attribute-values '{":available":{"N":"10"},":reserved":{"N":"0"}}'
+          fi
+
+      # Only reverts the Lambda IMAGES to what they ran before this deploy
+      # — not the Terraform-managed infrastructure itself. Once Terraform
+      # has applied, ANY later failure leaves a changed backend unverified:
+      # frontend packaging/upload, smoke, token acquisition, integration test or test
+      # cleanup. `failure()` deliberately covers all of them. A bad
+      # infrastructure change still needs a deliberate fix-forward commit;
+      # Terraform has no safe generic "revert" operation the way pointing a
+      # Lambda back at a known-good image digest does.
+      - name: Roll back redeployed Lambda images after any post-apply failure
+        if: >-
+          always() &&
+          steps.terraform_apply.outcome == 'success' &&
+          failure()
+        run: |
+          echo '${{ steps.pre_deploy.outputs.previous_images }}' | jq -r 'to_entries[] | "\(.key) \(.value)"' |
+          while read -r function_name image_uri; do
+            echo "Rolling back $function_name to $image_uri"
+            aws lambda update-function-code \
+              --function-name "$function_name" \
+              --image-uri "$image_uri" \
+              --region "$AWS_REGION" \
+              --no-cli-pager
+          done

@@ -59,12 +59,11 @@ resource "aws_iam_role_policy" "outbox_relay" {
 
 # ---------- The function ----------
 
-# :latest is mutable, so a plain reference to it means a push is never
-# detected as a change — the same gap fixed for Notification and for
-# http_service's own image_uri. Resolving it to a digest here makes a new
-# push something `terraform apply` actually deploys, with no separate
-# manual `aws lambda update-function-code` call needed after it.
+# Local/manual bootstrap fallback only. CD supplies exact immutable image
+# URIs through deployment_image_uris for every service in a release.
 data "aws_ecr_image" "outbox_relay" {
+  count = contains(keys(var.deployment_image_uris), "outbox_relay") ? 0 : 1
+
   repository_name = aws_ecr_repository.outbox_relay.name
   image_tag       = "latest"
 }
@@ -73,7 +72,7 @@ resource "aws_lambda_function" "outbox_relay" {
   function_name = "${local.prefix}-outbox-relay"
   role          = aws_iam_role.outbox_relay.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.outbox_relay.repository_url}@${data.aws_ecr_image.outbox_relay.image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), "outbox_relay") ? var.deployment_image_uris["outbox_relay"] : "${aws_ecr_repository.outbox_relay.repository_url}@${data.aws_ecr_image.outbox_relay[0].image_digest}"
 
   timeout     = 30
   memory_size = 256

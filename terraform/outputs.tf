@@ -72,6 +72,13 @@ output "frontend_bucket" {
   value = aws_s3_bucket.frontend.bucket
 }
 
+# CD needs this to invalidate the right distribution after a frontend
+# deploy — it was being read by cd.yml with no corresponding output ever
+# defined, which would have failed the deploy the first time that step ran.
+output "cloudfront_distribution_id" {
+  value = aws_cloudfront_distribution.main.id
+}
+
 output "waf_web_acl_arn" {
   value = aws_wafv2_web_acl.main.arn
 }
@@ -114,6 +121,12 @@ output "cognito_user_pool_id" {
 
 output "cognito_web_client_id" {
   value = aws_cognito_user_pool_client.web.id
+}
+
+# Public identifier only. The test-user passwords are GitHub Environment
+# secrets and are never Terraform variables, outputs or repository files.
+output "cognito_integration_test_client_id" {
+  value = aws_cognito_user_pool_client.integration_test.id
 }
 
 output "cognito_domain" {

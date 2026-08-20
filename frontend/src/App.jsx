@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth/AuthProvider.jsx";
+import Home from "./components/Home.jsx";
 import ProductGrid from "./components/ProductGrid.jsx";
 import ProductDetail from "./components/ProductDetail.jsx";
 import CartPage from "./components/CartPage.jsx";
@@ -19,9 +20,10 @@ import CompleteProfilePage from "./components/CompleteProfilePage.jsx";
 import ProfilePage from "./components/ProfilePage.jsx";
 
 const CART_KEY = "smartretailx.cart";
-const KNOWN_ROUTES = ["catalogue", "cart", "orders", "admin", "dashboard", "customers", "profile", "complete-profile"];
+const KNOWN_ROUTES = ["home", "catalogue", "cart", "orders", "admin", "dashboard", "customers", "profile", "complete-profile"];
 
 const PAGE_TITLES = {
+  home: "SmartRetailX",
   catalogue: "Shop",
   cart: "Your basket",
   orders: "Your orders",
@@ -33,8 +35,8 @@ const PAGE_TITLES = {
   notfound: "Page not found",
 };
 
-// Distinct from "no hash yet" (a fresh landing, defaults to the shop) —
-// an actual unrecognised hash (a stale bookmark, a typo) gets its own
+// Distinct from "no hash yet" (a fresh landing, defaults to home) — an
+// actual unrecognised hash (a stale bookmark, a typo) gets its own
 // "Page not found" state instead of silently pretending nothing's wrong.
 function routeFromLocation() {
   // Legacy hash links remain usable, but new navigation writes real browser
@@ -42,13 +44,13 @@ function routeFromLocation() {
   const legacyRoute = window.location.hash.replace("#", "");
   if (legacyRoute) return KNOWN_ROUTES.includes(legacyRoute) ? legacyRoute : "notfound";
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
-  if (path === "/") return "catalogue";
+  if (path === "/") return "home";
   const route = path.slice(1);
   return KNOWN_ROUTES.includes(route) ? route : "notfound";
 }
 
 function pathForRoute(route) {
-  return route === "catalogue" ? "/" : `/${route}`;
+  return route === "home" ? "/" : `/${route}`;
 }
 
 export default function App() {
@@ -138,7 +140,7 @@ export default function App() {
     // Don't let a completed user browse back to the one-purpose completion
     // page. They can edit their details from My Profile instead.
     if (user && profileStatus === "ready" && route === "complete-profile") {
-      navigate(isAdmin ? "dashboard" : "catalogue");
+      navigate(isAdmin ? "dashboard" : "home");
       return;
     }
 
@@ -218,13 +220,13 @@ export default function App() {
         <div className="mx-auto max-w-7xl px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <button
-              onClick={() => { setSelectedProductId(null); navigate(isAdmin ? "dashboard" : "catalogue"); }}
+              onClick={() => { setSelectedProductId(null); navigate(isAdmin ? "dashboard" : "home"); }}
               className="text-left"
             >
               <h1 className="text-xl font-bold tracking-tight text-stone-900">
                 SmartRetail<span className="text-brand-600">X</span>
               </h1>
-              <p className="text-sm text-stone-500">{isAdmin ? "Administrator" : "Product Catalogue"}</p>
+              {isAdmin && <p className="text-sm text-stone-500">Administrator</p>}
             </button>
 
             {route === "complete-profile" ? null : isAdmin ? (
@@ -280,6 +282,14 @@ export default function App() {
             onAddToCart={addToCart}
             idToken={idToken}
           />
+        ) : route === "home" ? (
+          <Home
+            user={user}
+            profile={profile}
+            onNavigate={navigate}
+            onSelectProduct={setSelectedProductId}
+            onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+          />
         ) : route === "catalogue" ? (
           <ProductGrid onSelectProduct={setSelectedProductId} onAddToCart={addToCart} idToken={idToken} />
         ) : route === "cart" ? (
@@ -305,7 +315,7 @@ export default function App() {
           <CompleteProfilePage
             accessToken={accessToken}
             profile={profile}
-            onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "catalogue"); }}
+            onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "home"); }}
           />
         ) : route === "profile" && user && profileStatus === "ready" ? (
           <ProfilePage
@@ -321,7 +331,7 @@ export default function App() {
         ) : route === "customers" && isAdmin ? (
           <CustomersOrdersPage idToken={idToken} />
         ) : route === "notfound" ? (
-          <NotFound onGoHome={() => navigate("catalogue")} />
+          <NotFound onGoHome={() => navigate("home")} />
         ) : (
           <AccessDenied onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))} />
         )}

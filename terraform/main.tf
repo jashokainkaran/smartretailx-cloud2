@@ -1,5 +1,14 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.10" # use_lockfile support (native S3 state locking)
+
+  # Concrete values (bucket, key, region) are supplied at `terraform init`
+  # time via backend.hcl — gitignored, since it's machine/environment
+  # config, not a secret, but also not something worth committing (the
+  # committed backend.hcl.example documents its shape). The bucket itself is
+  # created once by terraform/bootstrap/, a deliberately separate root — see
+  # that directory's own comment for why it can't live here.
+  backend "s3" {}
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"

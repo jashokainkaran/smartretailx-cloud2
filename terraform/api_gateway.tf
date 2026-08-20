@@ -90,8 +90,14 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
   identity_sources = ["$request.header.Authorization"]
 
   jwt_configuration {
-    audience = [aws_cognito_user_pool_client.web.id]
-    issuer   = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.main.id}"
+    # Browser PKCE tokens and the non-browser CP-059 test-client tokens are
+    # both valid identities from this one user pool. RBAC remains enforced by
+    # trusted Cognito group claims in each service.
+    audience = [
+      aws_cognito_user_pool_client.web.id,
+      aws_cognito_user_pool_client.integration_test.id,
+    ]
+    issuer = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.main.id}"
   }
 }
 

@@ -8,7 +8,6 @@ os.environ["AUTH_TEST_MODE"] = "true"
 
 import json
 import time
-from decimal import Decimal
 
 import boto3
 import pytest
@@ -352,7 +351,7 @@ def test_published_event_carries_enough_to_send_a_receipt_with_no_callback(calls
     contact_email and full line-item detail — not just an order_id and a
     total. This is the regression test for that contract.
     """
-    order_id = client.post("/api/v1/orders", json=basket()).json()["order_id"]
+    client.post("/api/v1/orders", json=basket())
 
     envelope = json.loads(outbox_records()[0]["payload"])
     data = envelope["data"]

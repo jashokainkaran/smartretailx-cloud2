@@ -22,11 +22,11 @@ resource "aws_ecr_lifecycle_policy" "product_service" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]
@@ -39,11 +39,11 @@ resource "aws_ecr_lifecycle_policy" "outbox_relay" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]

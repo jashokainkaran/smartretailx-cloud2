@@ -1,3 +1,5 @@
+import time
+
 import boto3
 
 from app import config
@@ -14,6 +16,12 @@ if config.DYNAMODB_ENDPOINT:
 dynamodb = boto3.resource("dynamodb", **_dynamodb_kwargs)
 table = dynamodb.Table(config.NOTIFICATIONS_TABLE)
 
+# This table only prevents duplicate SQS deliveries from producing duplicate
+# emails. Keeping a sent-event marker forever provides no extra protection
+# after the queues/events have expired, but does make the table grow without
+# bound. Seven days comfortably exceeds the queue's four-day retention.
+SENT_EVENT_TTL_SECONDS = 7 * 24 * 60 * 60
+
 
 def already_sent(event_id: str) -> bool:
     """A plain read, not a conditional write — deliberately. The handler
@@ -29,4 +37,7 @@ def already_sent(event_id: str) -> bool:
 
 def mark_sent(event_id: str) -> None:
     """Called only once send_receipt() has actually returned successfully."""
-    table.put_item(Item={"event_id": event_id})
+    table.put_item(Item={
+        "event_id": event_id,
+        "ttl": int(time.time()) + SENT_EVENT_TTL_SECONDS,
+    })

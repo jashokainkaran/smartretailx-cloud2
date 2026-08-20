@@ -16,6 +16,7 @@ export default function OrdersPage({ idToken, latestOrder }) {
   // the effect below) — revisiting this page later with the same stale
   // latestOrder won't bring a dismissed banner back.
   const [showConfirmation, setShowConfirmation] = useState(Boolean(latestOrder));
+  const latestOrderId = latestOrder?.order_id;
 
   const load = useCallback(() => {
     setLoading(true);
@@ -31,8 +32,8 @@ export default function OrdersPage({ idToken, latestOrder }) {
 
   useEffect(() => {
     load();
-    setShowConfirmation(Boolean(latestOrder));
-  }, [load, latestOrder?.order_id]);
+    setShowConfirmation(Boolean(latestOrderId));
+  }, [load, latestOrderId]);
 
   async function loadMore() {
     setLoadingMore(true);

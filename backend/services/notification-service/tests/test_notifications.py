@@ -1,4 +1,5 @@
 import os
+import time
 
 # Point the app at a SEPARATE test table BEFORE importing it — same pattern
 # every other service's test file uses, and for the same reason: config.py
@@ -87,8 +88,11 @@ def test_new_event_is_not_already_sent():
 
 
 def test_marked_event_is_reported_as_already_sent():
+    before = int(time.time())
     repository.mark_sent("evt-x")
     assert repository.already_sent("evt-x") is True
+    stored = repository.table.get_item(Key={"event_id": "evt-x"})["Item"]
+    assert stored["ttl"] >= before + repository.SENT_EVENT_TTL_SECONDS
 
 
 # ---------------------------------------------------------------------------

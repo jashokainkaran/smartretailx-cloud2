@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -65,7 +64,7 @@ def handler(event, context):
         payload = item["payload"]
         event_source = item.get("event_source", DEFAULT_EVENT_SOURCE)
 
-        _events.put_events(
+        response = _events.put_events(
             Entries=[{
                 "EventBusName": EVENT_BUS_NAME,
                 "Source": event_source,
@@ -73,6 +72,12 @@ def handler(event, context):
                 "Detail": payload,
             }]
         )
+        # EventBridge can return a successful HTTP response while rejecting
+        # an individual entry. Do not mark the durable outbox record complete
+        # in that case: raising leaves the DynamoDB Stream batch retryable.
+        if response.get("FailedEntryCount", 0):
+            failures = response.get("Entries", [])
+            raise RuntimeError(f"EventBridge rejected outbox event {event_id}: {failures}")
 
         now = datetime.now(timezone.utc).isoformat()
         ttl = int(time.time()) + (TTL_DAYS * 86400)

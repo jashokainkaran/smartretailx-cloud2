@@ -13,11 +13,11 @@ resource "aws_ecr_lifecycle_policy" "inventory_service" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only the 5 most recent images"
+      description  = "Keep the configured number of recent images for rollback"
       selection = {
         tagStatus   = "any"
         countType   = "imageCountMoreThan"
-        countNumber = 5
+        countNumber = var.ecr_image_retention_count
       }
       action = { type = "expire" }
     }]
@@ -87,7 +87,7 @@ resource "aws_lambda_function" "inventory_consumer" {
   function_name = "${local.prefix}-inventory-consumer"
   role          = aws_iam_role.inventory_consumer.arn
   package_type  = "Image"
-  image_uri     = "${aws_ecr_repository.inventory_service.repository_url}@${data.aws_ecr_image.http_service["inventory"].image_digest}"
+  image_uri     = contains(keys(var.deployment_image_uris), "inventory") ? var.deployment_image_uris["inventory"] : "${aws_ecr_repository.inventory_service.repository_url}@${data.aws_ecr_image.http_service["inventory"].image_digest}"
 
   image_config {
     command = ["app.consumer.handler"]
