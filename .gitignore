@@ -35,3 +35,6 @@ docs/
 
 # Evidence screenshots/logs for the report — excluded by choice
 evidence/
+
+# Local tooling scratch data — not project content
+.playwright-mcp/
