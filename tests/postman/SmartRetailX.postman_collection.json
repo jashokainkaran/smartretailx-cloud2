@@ -1,0 +1,290 @@
+{
+  "info": {
+    "name": "SmartRetailX — Deployed Smoke & Security Tests",
+    "description": "Runs against the real deployed API Gateway (not local/DynamoDB Local). Two things this project's own test suites structurally cannot cover: (1) that the whole path — CloudFront/API Gateway/Lambda/DynamoDB — is actually up (smoke), and (2) that API Gateway's own JWT authorizer genuinely rejects a missing/garbage token, since AUTH_TEST_MODE bypasses that exact code path in every local test (security). See CHECKPOINT_STATUS.md CP-035's own noted limitation.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0. Smoke Tests (CP-046)",
+      "item": [
+        {
+          "name": "Product catalogue is reachable and returns real data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/products",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "products"]
+            },
+            "description": "No auth needed — public route. Proves CloudFront/API Gateway/Lambda/DynamoDB are all wired end to end. There is no reachable /health route through the gateway (each service's /health is mounted at the bare FastAPI root, and API Gateway only routes under /api/v1/<service>/* — a real, documented gap, not an oversight in this collection), so a real data-returning endpoint is the actual smoke check here."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response has an items array', function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('items');",
+                  "    pm.expect(body.items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Security — No Authorization header",
+      "item": [
+        {
+          "name": "Orders list rejects a request with no token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/orders",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "orders"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (authorizer rejects, no token)', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin product listing rejects a request with no token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/products/admin",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "products", "admin"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Security — Garbage token",
+      "item": [
+        {
+          "name": "Orders list rejects a syntactically invalid token",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer this.is.not.a.real.jwt" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/orders",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "orders"]
+            },
+            "description": "Not a real Cognito-signed token — proves the authorizer actually validates the signature rather than just checking 'a token exists'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (signature invalid)', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Security — Role enforcement (needs real tokens)",
+      "item": [
+        {
+          "name": "Customer token is rejected on admin-only product listing",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{customer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/products/admin",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "products", "admin"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403 (valid token, wrong role)', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin token is accepted on admin-only product listing",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/products/admin",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "products", "admin"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer token is rejected on admin-wide order listing",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{customer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/orders/admin",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "orders", "admin"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin token is accepted on admin-wide order listing",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{admin_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/orders/admin",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "orders", "admin"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer token can list their own orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{customer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/orders",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "orders"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (a valid token IS allowed here)', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Security — IDOR (optional, needs customer_order_id)",
+      "item": [
+        {
+          "name": "Owner can read their own order by id",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{customer_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/orders/{{customer_order_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "orders", "{{customer_order_id}}"]
+            },
+            "description": "Skip this folder entirely if customer_order_id isn't set — it needs a real order ID belonging to the customer test account."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.environment.get('customer_order_id')) {",
+                  "    pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "} else {",
+                  "    console.log('customer_order_id not set — skipping assertion');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

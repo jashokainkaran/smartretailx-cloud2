@@ -32,3 +32,6 @@ dist/
 
 # Internal planning docs (excluded by choice)
 docs/
+
+# Evidence screenshots/logs for the report — excluded by choice
+evidence/
