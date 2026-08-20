@@ -119,6 +119,7 @@ locals {
     order_stuck           = { service = "order", route_key = "GET /api/v1/orders/stuck" }
     order_admin_list      = { service = "order", route_key = "GET /api/v1/orders/admin" }
     order_admin_summary   = { service = "order", route_key = "GET /api/v1/orders/admin/summary" }
+    order_ready_to_ship   = { service = "order", route_key = "GET /api/v1/orders/admin/ready-to-ship" }
     order_delivery_status = { service = "order", route_key = "PATCH /api/v1/orders/{order_id}/delivery-status" }
 
     payment_get    = { service = "payment", route_key = "GET /api/v1/payments/{payment_id}" }

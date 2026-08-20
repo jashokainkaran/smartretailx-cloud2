@@ -92,18 +92,26 @@ def _price_basket(request: OrderCreate):
     product_ids = [item.product_id for item in request.items]
     catalogue = clients.fetch_products(product_ids)
 
+    # No name is available for a product the catalogue never returned at
+    # all, so this stays generic rather than exposing the raw internal id
+    # to the customer.
     missing = sorted({pid for pid in product_ids if pid not in catalogue})
     if missing:
-        raise BasketInvalid(f"Unknown product(s): {', '.join(missing)}")
+        raise BasketInvalid(
+            "Unknown product(s) in your basket. Please review your basket and try again."
+        )
 
     # Deactivated products are returned by the batch endpoint rather than
     # filtered out (ADR-037), precisely so this check can tell a withdrawn
-    # product from a non-existent one and say which happened.
-    inactive = sorted({
-        pid for pid in product_ids if not catalogue[pid].get("active", True)
+    # product from a non-existent one and say which happened. The catalogue
+    # lookup succeeded here, so the product's real name is available —
+    # shown instead of its internal id, the same customer-facing choice the
+    # price-change message below already makes.
+    inactive_names = sorted({
+        catalogue[pid]["name"] for pid in product_ids if not catalogue[pid].get("active", True)
     })
-    if inactive:
-        raise BasketInvalid(f"Product(s) no longer for sale: {', '.join(inactive)}")
+    if inactive_names:
+        raise BasketInvalid(f"Product(s) no longer for sale: {', '.join(inactive_names)}")
 
     price_changes = []
     for item in request.items:

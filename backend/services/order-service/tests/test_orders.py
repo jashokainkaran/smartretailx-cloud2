@@ -726,7 +726,11 @@ def test_unknown_product_is_rejected_without_creating_an_order(calls):
         {"product_id": "does-not-exist", "quantity": 1},
     ]))
     assert response.status_code == 409
-    assert "Unknown product" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert "Unknown product" in detail
+    # The raw internal id must never reach the customer — no name exists to
+    # show instead here, so the message stays generic rather than leaking it.
+    assert "does-not-exist" not in detail
     assert calls.reserved == 0
 
 
@@ -742,7 +746,11 @@ def test_deactivated_product_is_rejected_with_its_own_message(calls, monkeypatch
 
     response = client.post("/api/v1/orders", json=basket())
     assert response.status_code == 409
-    assert "no longer for sale" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert "no longer for sale" in detail
+    # The product's name is shown, not its raw internal id.
+    assert "Widget" in detail
+    assert "p1" not in detail
 
 
 def test_catalogue_unavailable_returns_503(calls, monkeypatch):

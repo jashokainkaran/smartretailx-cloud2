@@ -68,7 +68,9 @@ describe("ProductCard", () => {
     await waitFor(() => expect(screen.getByText("Add")).toBeEnabled());
     fireEvent.click(screen.getByText("Add"));
 
-    expect(onAddToCart).toHaveBeenCalledWith(product);
+    // Also passes the fetched stock level along — App.jsx's addToCart uses
+    // it to cap additions at what's actually available.
+    expect(onAddToCart).toHaveBeenCalledWith(product, 5);
     expect(onSelect).not.toHaveBeenCalled();
   });
 

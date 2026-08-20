@@ -5,20 +5,24 @@ import { fetchStock } from "../api/inventory.js";
 import { useWebSocketMessage } from "../realtime/WebSocketProvider.jsx";
 
 export default function ProductCard({ product, onSelect, onAddToCart, idToken }) {
-  const [outOfStock, setOutOfStock] = useState(false);
+  // The numeric level is what onAddToCart needs to enforce a real stock cap
+  // (App.jsx's addToCart); outOfStock below is just this derived to a
+  // boolean for the disabled/badge styling.
+  const [availableQuantity, setAvailableQuantity] = useState(null);
+  const outOfStock = availableQuantity !== null && availableQuantity <= 0;
 
   useEffect(() => {
     let cancelled = false;
     fetchStock(product.id, idToken)
       .then((stock) => {
-        if (!cancelled) setOutOfStock(stock.available_quantity <= 0);
+        if (!cancelled) setAvailableQuantity(stock.available_quantity);
       })
       .catch((err) => {
         // A 404 means no inventory record exists for this product at all —
         // nothing to sell, treated the same as zero available. Any other
         // failure (network, 500) is left alone rather than guessing "out of
         // stock" from what might just be a transient error.
-        if (!cancelled && err.status === 404) setOutOfStock(true);
+        if (!cancelled && err.status === 404) setAvailableQuantity(0);
       });
     return () => { cancelled = true; };
   }, [product.id, idToken]);
@@ -28,7 +32,7 @@ export default function ProductCard({ product, onSelect, onAddToCart, idToken })
   // level that was already true beforehand.
   const handleStockUpdate = useCallback((message) => {
     if (message.product_id !== product.id) return;
-    setOutOfStock(message.available <= 0);
+    setAvailableQuantity(message.available);
   }, [product.id]);
   useWebSocketMessage("StockUpdated", handleStockUpdate);
 
@@ -36,7 +40,7 @@ export default function ProductCard({ product, onSelect, onAddToCart, idToken })
     // Stops this reaching the card's own onClick below — without it, adding
     // to cart would ALSO open the product detail view.
     event.stopPropagation();
-    onAddToCart(product);
+    onAddToCart(product, availableQuantity);
   }
 
   function handleKeyDown(event) {

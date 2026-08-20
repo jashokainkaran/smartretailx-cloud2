@@ -164,9 +164,19 @@ export default function App() {
     }
   }, [status, user, profileStatus, profileIncomplete, route, isAdmin]);
 
-  function addToCart(product) {
+  function addToCart(product, availableQuantity) {
+    // availableQuantity is the stock level the caller (ProductCard/
+    // ProductDetail) already fetched — undefined/null if that fetch hasn't
+    // resolved yet, in which case this can't safely block the add and lets
+    // it through, matching how the button itself only ever disables at zero.
+    let blocked = false;
     setCart((current) => {
       const existing = current.find((item) => item.id === product.id);
+      const currentQuantity = existing ? existing.quantity : 0;
+      if (typeof availableQuantity === "number" && currentQuantity >= availableQuantity) {
+        blocked = true;
+        return current;
+      }
       if (existing) return current.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
       return [...current, { id: product.id, name: product.name, price: product.price, image_url: product.image_url, quantity: 1 }];
     });
@@ -174,7 +184,9 @@ export default function App() {
     // or third item from the grid disruptive (you'd get yanked away every
     // time). A toast confirms it instead; the basket link is right there
     // in the nav whenever you're ready to check out.
-    setToast({ message: `${product.name} added to cart`, key: Date.now() });
+    setToast(blocked
+      ? { message: `Only ${availableQuantity} of ${product.name} in stock — you already have that many in your basket.`, variant: "error", key: Date.now() }
+      : { message: `${product.name} added to cart`, key: Date.now() });
   }
 
   function setQuantity(productId, rawQuantity) {
@@ -201,7 +213,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-stone-50">
-      <Toast message={toast?.message} key={toast?.key} />
+      <Toast message={toast?.message} variant={toast?.variant} key={toast?.key} />
       <header className="sticky top-0 z-10 border-b border-stone-200 bg-white/90 backdrop-blur relative">
         <div className="mx-auto max-w-7xl px-6 py-4">
           <div className="flex items-center justify-between gap-4">
@@ -280,7 +292,11 @@ export default function App() {
             user={user}
             profile={profile}
             onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
-            onOrderCreated={(order) => { setLatestOrder(order); navigate("orders"); }}
+            onOrderCreated={(order) => {
+              setLatestOrder(order);
+              setToast({ message: "Order placed!", variant: "success", key: Date.now() });
+              navigate("orders");
+            }}
             onRefreshPrices={refreshCartPrices}
           />
         ) : route === "orders" && user ? (

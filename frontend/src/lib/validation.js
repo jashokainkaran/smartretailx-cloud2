@@ -17,6 +17,21 @@ export function validateEmail(value) {
   return null;
 }
 
+export function validatePostalCode(value) {
+  if (!value || !value.trim()) return "Postal code is required.";
+  // Deliberately loose rather than per-country: real postal code formats
+  // vary too widely (UK "SW1A 1AA" vs US "94103" vs Japan "100-0001") for
+  // one pattern to validate all of them correctly. This catches the actual
+  // mistakes worth catching — empty, way too short, or garbage characters
+  // — without rejecting a real address from a country this wasn't tested
+  // against.
+  const trimmed = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9\s-]{1,9}$/.test(trimmed)) {
+    return "Enter a valid postal code.";
+  }
+  return null;
+}
+
 export function validatePhone(value) {
   if (!value || !value.trim()) return "Phone number is required.";
   const digits = value.replace(/[^\d]/g, "");

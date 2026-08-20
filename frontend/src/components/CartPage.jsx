@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { createOrder } from "../api/orders.js";
+import { fetchStock } from "../api/inventory.js";
 import { formatPrice } from "../lib/currency.js";
-import { validateEmail, validatePhone, validateRequired } from "../lib/validation.js";
+import { validateEmail, validatePhone, validatePostalCode, validateRequired } from "../lib/validation.js";
+import { COUNTRIES } from "../lib/countries.js";
 import CardFields, { deriveMockToken, validateCard } from "./CardFields.jsx";
 import ProductImage from "./ProductImage.jsx";
 import { consumeCheckoutDraft, saveCheckoutDraft } from "../lib/checkoutDraft.js";
@@ -29,7 +31,7 @@ function validateAll(form) {
     recipient_last_name: validateRequired(form.address.recipient_last_name, "Recipient last name"),
     street: validateRequired(form.address.street, "Street"),
     city: validateRequired(form.address.city, "City"),
-    postal_code: validateRequired(form.address.postal_code, "Postal code"),
+    postal_code: validatePostalCode(form.address.postal_code),
     country: validateRequired(form.address.country, "Country"),
     contact_email: validateEmail(form.contactEmail),
     contact_phone: validatePhone(form.contactPhone),
@@ -55,6 +57,37 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
   const [error, setError] = useState(null);
   const [priceChanges, setPriceChanges] = useState(null);
   const [refreshNotice, setRefreshNotice] = useState(null);
+  const [stockByProductId, setStockByProductId] = useState({});
+
+  // Keyed on the SET of product ids in the basket, not the cart array itself
+  // — editing a quantity must not re-trigger this fetch, only adding or
+  // removing a distinct product should.
+  const cartProductIds = cart.map((item) => item.id).join(",");
+  useEffect(() => {
+    let cancelled = false;
+    cart.forEach((item) => {
+      fetchStock(item.id, idToken)
+        .then((stock) => {
+          if (!cancelled) setStockByProductId((current) => ({ ...current, [item.id]: stock.available_quantity }));
+        })
+        // A stock lookup failing (e.g. no inventory record yet) must not
+        // block editing the quantity — just leave that item's cap unknown.
+        .catch(() => {});
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cartProductIds, idToken]);
+
+  // A plain-text checkout failure (unknown/deactivated product, payment
+  // declined, network error) clears itself after a while — long enough to
+  // read, unlike the 2.5s toast. The price-changed case is deliberately
+  // excluded: it carries the "Refresh basket prices" button, the customer's
+  // actual way to recover, so it must stay until they act on it or resubmit.
+  useEffect(() => {
+    if (!error || priceChanges) return;
+    const timer = setTimeout(() => setError(null), 7000);
+    return () => clearTimeout(timer);
+  }, [error, priceChanges]);
 
   // Restores whatever was typed before the sign-in redirect, if anything —
   // one-time, consumed on read, so it can't resurrect a stale draft on a
@@ -206,10 +239,17 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
               <label className="text-sm text-stone-600">
                 <span className="sr-only">Quantity for {item.name}</span>
                 <input
-                  type="number" min="1" max="99" value={item.quantity}
-                  onChange={(event) => setQuantity(item.id, event.target.value)}
+                  type="number" min="1" max={stockByProductId[item.id] ?? 99} value={item.quantity}
+                  onChange={(event) => {
+                    const requested = Number(event.target.value) || 1;
+                    const cap = stockByProductId[item.id];
+                    setQuantity(item.id, typeof cap === "number" ? Math.min(requested, cap) : requested);
+                  }}
                   className="w-16 rounded-md border border-stone-300 px-2 py-1.5"
                 />
+                {typeof stockByProductId[item.id] === "number" && (
+                  <span className="mt-1 block text-xs text-stone-400">{stockByProductId[item.id]} in stock</span>
+                )}
               </label>
               <p className="w-20 text-right font-semibold text-stone-900">{formatPrice(Number(item.price) * item.quantity)}</p>
               <button onClick={() => removeItem(item.id)} className="text-sm font-medium text-red-700 hover:text-red-900">Remove</button>
@@ -274,8 +314,9 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
                 onBlur={() => touch("postal_code")} error={showError("postal_code") && errors.postal_code}
               />
             </div>
-            <TextField
+            <SelectField
               label="Country" value={form.address.country} autoComplete="country-name"
+              options={COUNTRIES}
               onChange={(v) => updateAddress("country", v)}
               onBlur={() => touch("country")} error={showError("country") && errors.country}
             />
@@ -420,6 +461,25 @@ function TextField({ label, value, onChange, onBlur, error, type = "text", autoC
         autoComplete={autoComplete}
         className={`mt-1 w-full rounded-md border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-400 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
       />
+      {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
+    </label>
+  );
+}
+
+function SelectField({ label, value, onChange, onBlur, error, options, autoComplete }) {
+  return (
+    <label className="block text-sm font-medium text-stone-700">
+      {label}
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={onBlur}
+        autoComplete={autoComplete}
+        className={`mt-1 w-full rounded-md border bg-white px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-400 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
+      >
+        <option value="">Select a country…</option>
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+      </select>
       {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
     </label>
   );

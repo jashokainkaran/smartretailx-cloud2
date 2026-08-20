@@ -92,7 +92,7 @@ export default function ProductDetail({ productId, onBack, onAddToCart, idToken 
               </p>
             )}
             <button
-              onClick={() => onAddToCart(product)}
+              onClick={() => onAddToCart(product, stock?.available_quantity)}
               disabled={stock ? stock.available_quantity <= 0 : false}
               className="mt-4 w-fit rounded-md bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400"
             >
