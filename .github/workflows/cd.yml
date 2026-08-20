@@ -120,6 +120,19 @@ jobs:
       - name: Download the exact commit that passed CI
         uses: actions/checkout@v4
 
+      # Temporary: prints the actual OIDC token claims GitHub issues to this
+      # job, so the sub/aud can be compared against the IAM trust policy
+      # directly instead of guessing why AssumeRoleWithWebIdentity failed.
+      # Remove once the OIDC failure is diagnosed.
+      - name: Debug OIDC token claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+            core.info(`sub: ${payload.sub}`);
+            core.info(`aud: ${payload.aud}`);
+
       - name: Configure short-lived AWS credentials through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
