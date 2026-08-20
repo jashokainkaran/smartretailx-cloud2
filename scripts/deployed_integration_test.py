@@ -190,22 +190,30 @@ def add_cleanup_order(manifest: dict[str, Any], order: dict[str, Any]) -> None:
     })
 
 
-def find_order_with_recipient(api_base_url: str, admin_token: str, recipient_name: str) -> dict[str, Any] | None:
-    """Make a GitHub-run retry safe: re-use its existing test order if present."""
+def find_order_with_recipient(api_base_url: str, customer_token: str, recipient_name: str) -> dict[str, Any] | None:
+    """Make a GitHub-run retry safe: re-use its existing test order if present.
+
+    Scoped to the dedicated test customer's OWN order history (GET
+    /api/v1/orders, RBAC-scoped server-side to the caller's Cognito subject —
+    see order-service/app/main.py's list_orders), not a scan of every order
+    in the deployed system. That dataset stays small regardless of how many
+    real orders exist, for the same reason the fixture product is looked up
+    by its own marker rather than by scanning the whole catalogue.
+    """
     cursor: str | None = None
     for _ in range(20):
-        path = "/api/v1/orders/admin?limit=100"
+        path = "/api/v1/orders?limit=100"
         if cursor:
             path += f"&cursor={parse.quote(cursor, safe='')}"
-        status, page = api_call(api_base_url, path, token=admin_token)
-        require_status(status, 200, "admin order listing")
+        status, page = api_call(api_base_url, path, token=customer_token)
+        require_status(status, 200, "customer order listing")
         for order in page.get("items", []):
-            if order.get("shipping_address", {}).get("recipient_name") == recipient_name:
+            if (order.get("shipping_address") or {}).get("recipient_name") == recipient_name:
                 return order
         cursor = page.get("next_cursor")
         if not cursor:
             return None
-    raise IntegrationFailure("Admin order listing exceeded the safe pagination limit.")
+    raise IntegrationFailure("Test customer's own order listing exceeded the safe pagination limit.")
 
 
 def order_body(product: dict[str, Any], recipient_name: str, customer_email: str, *, declined: bool) -> dict[str, Any]:
@@ -230,14 +238,13 @@ def order_body(product: dict[str, Any], recipient_name: str, customer_email: str
 def create_or_reuse_order(
     api_base_url: str,
     customer_token: str,
-    admin_token: str,
     product: dict[str, Any],
     customer_email: str,
     recipient_name: str,
     *,
     declined: bool,
 ) -> tuple[dict[str, Any], bool]:
-    existing = find_order_with_recipient(api_base_url, admin_token, recipient_name)
+    existing = find_order_with_recipient(api_base_url, customer_token, recipient_name)
     if existing:
         return existing, False
 
@@ -292,7 +299,6 @@ def main() -> int:
         cod_order, cod_created = create_or_reuse_order(
             api_base_url,
             customer_token,
-            admin_token,
             product,
             args.customer_email,
             f"{run_marker} COD",
@@ -333,7 +339,6 @@ def main() -> int:
         declined_order, _ = create_or_reuse_order(
             api_base_url,
             customer_token,
-            admin_token,
             product,
             args.customer_email,
             f"{run_marker} decline",
