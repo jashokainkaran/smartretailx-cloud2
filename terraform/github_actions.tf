@@ -55,10 +55,23 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
     # Environment has a required-reviewer rule attached. Forks, other
     # repositories, and any job not targeting this named environment are
     # rejected here regardless of what the OIDC provider itself allows.
+    #
+    # Two exact values, not a wildcard: GitHub is rolling out immutable
+    # owner/repo IDs embedded in this claim (repo:OWNER@id/REPO@id:...)
+    # alongside the plain form. A StringLike wildcard covering both looks
+    # tempting but is unsafe here — IAM's "*" matches "/" too, so a pattern
+    # like "repo:jashokainkaran*/smartretailx-cloud2*:..." would also
+    # authorize e.g. a look-alike account "jashokainkaran-x" with a repo
+    # named "smartretailx-cloud2-evil". These two literal values are the
+    # only two subject strings GitHub can ever actually issue for this real
+    # repository, so exact StringEquals stays exact.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${var.github_deployment_environment}"]
+      values = [
+        "repo:${var.github_repository}:environment:${var.github_deployment_environment}",
+        "repo:jashokainkaran@138567332/smartretailx-cloud2@1331796742:environment:${var.github_deployment_environment}",
+      ]
     }
   }
 }
