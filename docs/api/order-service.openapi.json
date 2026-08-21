@@ -1,0 +1,820 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SmartRetailX - Order Service",
+    "description": "Order service and orchestrated checkout saga (ADR-028)",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Report healthy only when the orders table is reachable.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders": {
+      "post": {
+        "summary": "Create Order",
+        "description": "Run the checkout saga and return the order in its terminal state.\n\nAlways 201 when an order record was created, whatever the outcome \u2014\nincluding REJECTED and the states requiring reconciliation. The order\nexists, it is addressable, and its `status` field carries the result.\nReturning 4xx for a rejected order would imply the request was bad; it\nwas not, the stock simply ran out, and the customer has an order record\nexplaining exactly that.\n\nThe two failures that produce no order at all are the ones where\nnothing happened anywhere: an unpriceable basket, and a catalogue we\ncould not reach.",
+        "operationId": "create_order_api_v1_orders_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Orders",
+        "description": "The signed-in customer's orders, newest first, with cursor pagination.\n\nThe customer key is Cognito's subject claim, not a request query value \u2014\nthis endpoint cannot be used to browse another customer's orders, even\nby an admin (see GET /api/v1/orders/admin below for that capability,\ngated separately). Same cursor scheme as the Product service \u2014 an opaque\nbase64 encoding of DynamoDB's LastEvaluatedKey, not an offset, because\nDynamoDB has no offset and emulating one costs more the deeper you page.",
+        "operationId": "list_orders_api_v1_orders_get",
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Customer Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/stuck": {
+      "get": {
+        "summary": "List Stuck Orders",
+        "description": "Every order requiring human reconciliation: PAYMENT_UNKNOWN,\nSTOCK_UNKNOWN and COMPENSATION_FAILED.\n\nServed from the sparse saga-status GSI. Healthy finished orders have\nhad their saga_status attribute removed and are not in the index at\nall, so this query reads only what is actually broken rather than\nfiltering the whole table.\n\nAdmin-only once Cognito is in place.",
+        "operationId": "list_stuck_orders_api_v1_orders_stuck_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Order"
+                  },
+                  "type": "array",
+                  "title": "Response List Stuck Orders Api V1 Orders Stuck Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/admin": {
+      "get": {
+        "summary": "List All Orders Admin",
+        "description": "Every order, across every customer \u2014 the admin Customers & Orders view.\n\nThe customer-scoped GET /api/v1/orders below deliberately has no \"list\neveryone's orders\" option, for the data-protection reason its own\ndocstring gives. This is that capability, made safe the same way\n/orders/stuck is: gated to admin only, not exposed on the general\nendpoint. repository.list_all_orders() queries all-orders-index (a\nconstant partition key set on every order at write time), not a Scan \u2014\nsee its own docstring for the full reasoning.",
+        "operationId": "list_all_orders_admin_api_v1_orders_admin_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/admin/summary": {
+      "get": {
+        "summary": "Order Summary",
+        "description": "Today's orders, aggregated \u2014 the admin dashboard's analytics panel.\n\n\"Today\" is computed here (UTC midnight to now), not accepted as a\nclient-supplied date range: this endpoint answers one specific\nquestion the dashboard asks, not a general reporting API. Registered\nahead of GET /orders/{order_id} in file order for readability, though\nit wouldn't collide either way \u2014 \"admin/summary\" is a different path\nsegment count, not a value that could be mistaken for an order_id.",
+        "operationId": "order_summary_api_v1_orders_admin_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/admin/ready-to-ship": {
+      "get": {
+        "summary": "Ready To Ship Orders",
+        "description": "Confirmed orders awaiting their first fulfilment-status update.\n\nThis deliberately means CONFIRMED or cash-on-delivery PENDING_ON_DELIVERY\norders with no delivery_status yet.  Once an administrator sets\nPROCESSING, SHIPPED, OUT_FOR_DELIVERY or DELIVERED, it leaves this list.",
+        "operationId": "ready_to_ship_orders_api_v1_orders_admin_ready_to_ship_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 5,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Order"
+                  },
+                  "title": "Response Ready To Ship Orders Api V1 Orders Admin Ready To Ship Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{order_id}": {
+      "get": {
+        "summary": "Get Order",
+        "description": "Fetch a single order by id.",
+        "operationId": "get_order_api_v1_orders__order_id__get",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Order Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orders/{order_id}/delivery-status": {
+      "patch": {
+        "summary": "Update Delivery Status",
+        "description": "Set fulfilment progress on a confirmed order (admin-only).\n\nNot a saga transition \u2014 repository.set_delivery_status() only requires\nthe order to currently be CONFIRMED or PENDING_ON_DELIVERY, and does not\nitself validate a forward-only sequence (PROCESSING -> ... -> DELIVERED).\nThat is a deliberate simplicity trade-off: this is operational\nbookkeeping an admin corrects by hand, not a financial safety property\nlike the saga's own conditional transitions.",
+        "operationId": "update_delivery_status_api_v1_orders__order_id__delivery_status_patch",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Order Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryStatusUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DeliveryStatusUpdate": {
+        "properties": {
+          "delivery_status": {
+            "type": "string",
+            "enum": [
+              "PROCESSING",
+              "SHIPPED",
+              "OUT_FOR_DELIVERY",
+              "DELIVERED"
+            ],
+            "title": "Delivery Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "delivery_status"
+        ],
+        "title": "DeliveryStatusUpdate"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Order": {
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "title": "Order Id"
+          },
+          "customer_id": {
+            "type": "string",
+            "title": "Customer Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderLineItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "shipping_address": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShippingAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Email"
+          },
+          "contact_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Phone"
+          },
+          "payment_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "card",
+                  "cash_on_delivery"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Method"
+          },
+          "total": {
+            "type": "string",
+            "title": "Total"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "payment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Id"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PROCESSING",
+                  "SHIPPED",
+                  "OUT_FOR_DELIVERY",
+                  "DELIVERED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order_id",
+          "customer_id",
+          "items",
+          "total",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Order"
+      },
+      "OrderCreate": {
+        "properties": {
+          "customer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderItemRequest"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Items"
+          },
+          "shipping_address": {
+            "$ref": "#/components/schemas/ShippingAddress"
+          },
+          "contact_email": {
+            "type": "string",
+            "title": "Contact Email"
+          },
+          "contact_phone": {
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 7,
+            "title": "Contact Phone"
+          },
+          "payment_method": {
+            "type": "string",
+            "enum": [
+              "card",
+              "cash_on_delivery"
+            ],
+            "title": "Payment Method"
+          },
+          "payment_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "shipping_address",
+          "contact_email",
+          "contact_phone",
+          "payment_method"
+        ],
+        "title": "OrderCreate"
+      },
+      "OrderItemRequest": {
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "quantity": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity"
+          },
+          "expected_unit_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)"
+              }
+            ],
+            "title": "Expected Unit Price"
+          }
+        },
+        "type": "object",
+        "required": [
+          "product_id",
+          "quantity",
+          "expected_unit_price"
+        ],
+        "title": "OrderItemRequest",
+        "description": "One basket line, as the CLIENT sends it.\n\n``expected_unit_price`` is the price the customer SAW when adding an\nitem to their basket. It is never trusted as the charge amount: the\nOrder service still obtains the current authoritative price from the\nProduct Catalogue. It lets checkout stop with a clear 409 when those\ntwo values differ, instead of silently charging a changed price.\n\nIn contrast, ``unit_price`` is deliberately not accepted as a charge\ninstruction. The server snapshots its own catalogue price into\nOrderLineItem below; developer tools cannot turn a television into a\none-penny purchase by changing this request."
+      },
+      "OrderLineItem": {
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "quantity": {
+            "type": "integer",
+            "title": "Quantity"
+          },
+          "unit_price": {
+            "type": "string",
+            "title": "Unit Price"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "product_id",
+          "quantity",
+          "unit_price",
+          "name"
+        ],
+        "title": "OrderLineItem",
+        "description": "One basket line as STORED, with the price resolved server-side.\n\nunit_price is a deliberate denormalisation. The obvious alternative is\nto store product_id only and look the price up from the catalogue when\ndisplaying the order \u2014 but prices change, and an order placed last\nTuesday must keep showing the price the customer actually agreed to.\nA stored order is a historical record of an agreement, not a live view\nof the catalogue. Same reasoning for name: the product may later be\nrenamed or deactivated (ADR-037) and the order must still render."
+      },
+      "OrderPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Order"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "OrderPage",
+        "description": "The shape returned by the paginated list endpoint, mirroring ProductPage."
+      },
+      "OrderSummary": {
+        "properties": {
+          "total_orders": {
+            "type": "integer",
+            "title": "Total Orders"
+          },
+          "total_revenue": {
+            "type": "string",
+            "title": "Total Revenue"
+          },
+          "average_order_value": {
+            "type": "string",
+            "title": "Average Order Value"
+          },
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Status"
+          },
+          "by_payment_method": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Payment Method"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_orders",
+          "total_revenue",
+          "average_order_value",
+          "by_status",
+          "by_payment_method"
+        ],
+        "title": "OrderSummary",
+        "description": "The admin dashboard's analytics panel \u2014 aggregated, not a list of\norders, so there is no pagination shape to mirror here."
+      },
+      "ShippingAddress": {
+        "properties": {
+          "recipient_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Recipient Name"
+          },
+          "street": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Street"
+          },
+          "city": {
+            "type": "string",
+            "minLength": 1,
+            "title": "City"
+          },
+          "postal_code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Postal Code"
+          },
+          "country": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Country"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recipient_name",
+          "street",
+          "city",
+          "postal_code",
+          "country"
+        ],
+        "title": "ShippingAddress",
+        "description": "Where the order is delivered. Required on every order, card or COD \u2014\neven a card payment has to arrive somewhere."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}
