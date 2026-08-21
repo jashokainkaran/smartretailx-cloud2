@@ -30,8 +30,10 @@ dist/
 .idea/
 .vscode/
 
-# Internal planning docs (excluded by choice)
-docs/
+# Internal planning docs (excluded by choice) — docs/api/ is real API
+# documentation, not a planning note, so it's carved out and tracked.
+docs/*
+!docs/api/
 
 # Evidence screenshots/logs for the report — excluded by choice
 evidence/

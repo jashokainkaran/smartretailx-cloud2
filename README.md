@@ -89,7 +89,7 @@ infrastructure defined entirely as code.
    ```
 4. Optionally seed sample data:
    ```powershell
-   python scripts\seed_products.py
+   python scripts\seed_catalogue.py
    python scripts\seed_inventory.py
    ```
 5. Run any of the four HTTP services (each from its own folder, its own venv activated):

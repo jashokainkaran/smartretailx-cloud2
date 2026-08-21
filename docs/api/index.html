@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SmartRetailX API docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      header {
+        display: flex; align-items: center; gap: 10px;
+        padding: 12px 20px; border-bottom: 1px solid #ddd; background: #fafafa;
+      }
+      header h1 { font-size: 15px; margin: 0 16px 0 0; }
+      select { padding: 4px 8px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>SmartRetailX API docs</h1>
+      <label for="spec-select">Service:</label>
+      <select id="spec-select">
+        <option value="product-service.openapi.json">Product service</option>
+        <option value="inventory-service.openapi.json">Inventory service</option>
+        <option value="payment-service.openapi.json">Payment service</option>
+        <option value="order-service.openapi.json">Order service</option>
+      </select>
+    </header>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      var select = document.getElementById("spec-select");
+      function load(url) {
+        window.ui = SwaggerUIBundle({ url: url, dom_id: "#swagger-ui" });
+      }
+      load(select.value);
+      select.addEventListener("change", function () { load(select.value); });
+    </script>
+  </body>
+</html>
