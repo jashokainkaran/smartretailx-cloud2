@@ -1,25 +1,34 @@
 # API docs
 
-OpenAPI 3.1 specs for the four HTTP services: product, inventory, payment, order.
-Generated from each FastAPI app's own schema.
+This is the OpenAPI documentation for the four HTTP services in the system:
+product, inventory, payment and order. Each spec is just the FastAPI app's own
+schema, dumped to JSON, so it's always exactly what that service actually
+implements.
 
-`notification-service` and `outbox-relay` are event-triggered, not HTTP APIs, so
-they don't get a spec. `websocket-service` doesn't fit OpenAPI either.
+Two services are missing on purpose. `notification-service` and
+`outbox-relay` only react to SQS/DynamoDB Stream events, they don't expose an
+HTTP API, so there's nothing to document here. `websocket-service` is a
+WebSocket API, which OpenAPI just isn't built to describe.
 
-## Viewing
+## Viewing the docs
 
-`index.html` is a Swagger UI page with a dropdown for the four specs. Needs to be
-served, not opened directly (browsers block a `file://` page from fetching the
-JSON next to it):
+Open `index.html` through a local server, not by double-clicking the file.
+Browsers block a page opened via `file://` from fetching the JSON next to it,
+so you'll just get a blank page if you try that.
 
 ```
 cd docs/api
 python -m http.server 8000
 ```
 
-Open `http://localhost:8000`.
+Then go to `http://localhost:8000` in a browser. There's a dropdown at the top
+to switch between the four services.
 
-## Regenerating
+## Keeping it up to date
+
+The specs are generated, not hand-written, so if you change a route or a
+Pydantic model, the JSON file will drift out of date until you regenerate it.
+For product-service that looks like:
 
 ```
 python -c "
@@ -30,5 +39,5 @@ print(json.dumps(app.openapi(), indent=2))
 " > docs/api/product-service.openapi.json
 ```
 
-Swap the service dir/filename for the other three. Do this after any route or
-model change so the spec doesn't drift from the code.
+Same idea for the other three, just swap the service folder and the output
+filename.
