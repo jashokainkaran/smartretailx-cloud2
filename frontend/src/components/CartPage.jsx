@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import * as Select from "@radix-ui/react-select";
 import { createOrder } from "../api/orders.js";
 import { fetchStock } from "../api/inventory.js";
 import { formatPrice } from "../lib/currency.js";
 import { validateEmail, validatePhone, validatePostalCode, validateRequired } from "../lib/validation.js";
-import { COUNTRIES } from "../lib/countries.js";
+import { COUNTRIES, COUNTRY_CODES } from "../lib/countries.js";
 import CardFields, { deriveMockToken, validateCard } from "./CardFields.jsx";
 import ProductImage from "./ProductImage.jsx";
+import ProductCarousel from "./ProductCarousel.jsx";
+import SuccessNotice from "./SuccessNotice.jsx";
 import { consumeCheckoutDraft, saveCheckoutDraft } from "../lib/checkoutDraft.js";
+import { getRecentlyViewed } from "../lib/recentlyViewed.js";
 
 const blankAddress = { recipient_first_name: "", recipient_last_name: "", street: "", city: "", postal_code: "", country: "" };
 const blankCard = { number: "", expiry: "", cvv: "" };
@@ -43,7 +48,7 @@ function hasErrors(errors) {
   return Object.values(errors).some(Boolean);
 }
 
-export default function CartPage({ cart, setQuantity, removeItem, clearCart, idToken, user, profile, onOrderCreated, onSignIn, onRefreshPrices }) {
+export default function CartPage({ cart, setQuantity, removeItem, clearCart, idToken, user, profile, onOrderCreated, onSignIn, onRefreshPrices, onSelectProduct, onNavigate }) {
   const [form, setForm] = useState({
     address: blankAddress,
     contactEmail: user?.email || "",
@@ -70,9 +75,14 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
         .then((stock) => {
           if (!cancelled) setStockByProductId((current) => ({ ...current, [item.id]: stock.available_quantity }));
         })
-        // A stock lookup failing (e.g. no inventory record yet) must not
-        // block editing the quantity — just leave that item's cap unknown.
-        .catch(() => {});
+        // A missing inventory record means there is nothing available to
+        // sell. Other failures leave the cap unknown rather than treating a
+        // temporary network problem as definitive zero stock.
+        .catch((stockError) => {
+          if (!cancelled && stockError.status === 404) {
+            setStockByProductId((current) => ({ ...current, [item.id]: 0 }));
+          }
+        });
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -131,6 +141,7 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
   }, [profile?.givenName, profile?.familyName, profile?.email]);
 
   const total = cart.reduce((sum, item) => sum + Number(item.price) * item.quantity, 0);
+  const hasUnavailableItems = cart.some((item) => stockByProductId[item.id] === 0);
   const errors = validateAll(form);
   const showError = (field) => (touched[field] || submitAttempted) && errors[field];
 
@@ -220,52 +231,66 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
   }
 
   if (cart.length === 0) {
-    return <EmptyCart />;
+    return <EmptyCart onSelectProduct={onSelectProduct} onNavigate={onNavigate} />;
   }
 
   return (
     <div className="grid gap-8 lg:grid-cols-[1fr_26rem]">
       <section>
         <p className="text-sm font-medium text-brand-700">Your basket</p>
-        <h2 className="mt-1 text-3xl font-bold tracking-tight text-stone-900">Ready when you are</h2>
-        <div className="mt-6 divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white">
-          {cart.map((item) => (
-            <div key={item.id} className="flex flex-wrap items-center gap-4 p-4">
-              <ProductImage src={item.image_url} alt={item.name} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
-              <div className="min-w-[9rem] flex-1">
-                <p className="font-semibold text-stone-900">{item.name}</p>
-                <p className="text-sm text-stone-500">{formatPrice(item.price)} each</p>
-              </div>
-              <div className="ml-auto flex items-center gap-4">
-                <label className="text-sm text-stone-600">
-                  <span className="sr-only">Quantity for {item.name}</span>
-                  <input
-                    type="number" min="1" max={stockByProductId[item.id] ?? 99} value={item.quantity}
-                    onChange={(event) => {
-                      const requested = Number(event.target.value) || 1;
-                      const cap = stockByProductId[item.id];
-                      setQuantity(item.id, typeof cap === "number" ? Math.min(requested, cap) : requested);
-                    }}
-                    className="w-16 rounded-md border border-stone-300 px-2 py-1.5"
-                  />
-                  {typeof stockByProductId[item.id] === "number" && (
-                    <span className="mt-1 block text-xs text-stone-400">{stockByProductId[item.id]} in stock</span>
-                  )}
-                </label>
-                <p className="w-16 text-right font-semibold text-stone-900 sm:w-20">{formatPrice(Number(item.price) * item.quantity)}</p>
-                <button onClick={() => removeItem(item.id)} className="text-sm font-medium text-red-700 hover:text-red-900">Remove</button>
-              </div>
-            </div>
-          ))}
+        <h2 className="mt-1 font-serif text-3xl font-medium tracking-tight text-stone-900">Ready when you are</h2>
+        <div className="mt-6 divide-y divide-brand-900/10 rounded-2xl bg-white shadow-luxe-sm">
+          <AnimatePresence initial={false} mode="popLayout">
+            {cart.map((item) => (
+              <motion.div
+                key={item.id}
+                layout
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, height: 0, marginTop: 0, marginBottom: 0 }}
+                transition={{ duration: 0.25 }}
+                className="flex flex-wrap items-center gap-4 p-4"
+              >
+                <ProductImage src={item.image_url} alt={item.name} className="h-16 w-16 shrink-0 rounded-xl object-cover" />
+                <div className="min-w-[9rem] flex-1">
+                  <p className="font-semibold text-stone-900">{item.name}</p>
+                  <p className="text-sm text-stone-500">{formatPrice(item.price)} each</p>
+                </div>
+                <div className="ml-auto flex items-center gap-4">
+                  <label className="text-sm text-stone-600">
+                    <span className="sr-only">Quantity for {item.name}</span>
+                    <input
+                      type="number" min="1" max={Math.max(1, stockByProductId[item.id] ?? 99)} value={item.quantity}
+                      aria-label={`Quantity for ${item.name}`}
+                      disabled={stockByProductId[item.id] === 0}
+                      onChange={(event) => {
+                        const requested = Number(event.target.value) || 1;
+                        const cap = stockByProductId[item.id];
+                        setQuantity(item.id, typeof cap === "number" ? Math.min(requested, cap) : requested);
+                      }}
+                      className="w-16 rounded-lg border border-stone-300 px-2 py-1.5 transition focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-200 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-400"
+                    />
+                    {typeof stockByProductId[item.id] === "number" && (
+                      <span className={`mt-1 block text-xs ${stockByProductId[item.id] === 0 ? "font-medium text-red-700" : "text-stone-400"}`}>
+                        {stockByProductId[item.id] === 0 ? "Out of stock — remove to continue" : `${stockByProductId[item.id]} in stock`}
+                      </span>
+                    )}
+                  </label>
+                  <p className="tabular-nums w-16 text-right font-semibold text-stone-900 sm:w-20">{formatPrice(Number(item.price) * item.quantity)}</p>
+                  <button onClick={() => removeItem(item.id)} className="text-sm font-medium text-red-700 transition hover:text-red-900">Remove</button>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
-        <div className="mt-4 flex justify-between rounded-xl border border-stone-200 bg-white px-5 py-4 text-sm">
+        <div className="mt-4 flex justify-between rounded-2xl bg-white px-5 py-4 text-sm shadow-luxe-sm">
           <span className="font-medium text-stone-600">Subtotal</span>
-          <strong className="text-stone-900">{formatPrice(total)}</strong>
+          <strong className="tabular-nums text-stone-900">{formatPrice(total)}</strong>
         </div>
       </section>
 
-      <aside className="h-fit rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
-        <h3 className="text-lg font-bold text-stone-900">Checkout</h3>
+      <aside className="h-fit rounded-2xl bg-white p-5 shadow-luxe sm:p-6">
+        <h3 className="font-serif text-xl font-semibold text-stone-900">Checkout</h3>
         {!idToken && (
           <p className="mt-2 text-xs text-stone-500">
             You can fill this in now — sign-in is only needed to place the order.
@@ -317,7 +342,7 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
               />
             </div>
             <SelectField
-              label="Country" value={form.address.country} autoComplete="country-name"
+              label="Country" value={form.address.country}
               options={COUNTRIES}
               onChange={(v) => updateAddress("country", v)}
               onBlur={() => touch("country")} error={showError("country") && errors.country}
@@ -394,17 +419,17 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
             </div>
           )}
           {refreshNotice && (
-            <p className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status">
+            <SuccessNotice>
               {refreshNotice}
-            </p>
+            </SuccessNotice>
           )}
           {error && <p className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
           <div className="flex items-center justify-between border-t border-stone-200 pt-4 text-sm">
             <span className="text-stone-600">Total</span>
-            <strong className="text-lg text-stone-900">{formatPrice(total)}</strong>
+            <strong className="tabular-nums text-lg text-stone-900">{formatPrice(total)}</strong>
           </div>
-          <button disabled={submitting} className="w-full rounded-md bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">
-            {submitting ? "Placing order…" : idToken ? "Place order" : "Sign in to checkout"}
+          <button disabled={submitting || hasUnavailableItems} className="w-full rounded-full bg-brand-600 px-4 py-3 text-sm font-semibold text-white shadow-luxe-sm transition hover:-translate-y-0.5 hover:bg-brand-700 active:translate-y-0 disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-60">
+            {submitting ? "Placing order…" : hasUnavailableItems ? "Remove unavailable items" : idToken ? "Place order" : "Sign in to checkout"}
           </button>
         </form>
       </aside>
@@ -415,7 +440,7 @@ export default function CartPage({ cart, setQuantity, removeItem, clearCart, idT
 function PaymentOption({ value, selected, onSelect, label, icon }) {
   return (
     <label
-      className={`flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border-2 p-3 text-center text-sm font-medium transition ${
+      className={`flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 p-3 text-center text-sm font-medium transition ${
         selected ? "border-brand-500 bg-brand-50 text-brand-800" : "border-stone-200 text-stone-600 hover:border-stone-300"
       }`}
     >
@@ -461,37 +486,128 @@ function TextField({ label, value, onChange, onBlur, error, type = "text", autoC
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}
         autoComplete={autoComplete}
-        className={`mt-1 w-full rounded-md border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-400 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
+        className={`mt-1 w-full rounded-lg border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-200 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
       />
       {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
     </label>
   );
 }
 
-function SelectField({ label, value, onChange, onBlur, error, options, autoComplete }) {
+// A styled dropdown instead of the browser's bare native one, so the
+// popup list actually matches the rest of the form (font, radius, the
+// selected-item checkmark) rather than looking like a different app.
+// Radix's own semantics (keyboard nav, ARIA) stand in for what a native
+// <select> gives for free — the one thing genuinely lost is browser
+// autofill, which a custom-rendered listbox can't hook into the way a
+// real <select> can.
+function SelectField({ label, value, onChange, onBlur, error, options }) {
   return (
-    <label className="block text-sm font-medium text-stone-700">
+    <div className="block text-sm font-medium text-stone-700">
       {label}
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onBlur={onBlur}
-        autoComplete={autoComplete}
-        className={`mt-1 w-full rounded-md border bg-white px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-400 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
-      >
-        <option value="">Select a country…</option>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
-      </select>
+      <Select.Root value={value} onValueChange={onChange}>
+        <Select.Trigger
+          onBlur={onBlur}
+          aria-label={label}
+          className={`mt-1 flex w-full items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 text-left transition focus:outline-none focus:ring-2 focus:ring-brand-200 ${error ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`}
+        >
+          <Select.Value placeholder="Select a country…" className={value ? "text-stone-900" : "text-stone-400"}>
+            {value && (
+              <span className="flex items-center gap-2">
+                <CountryFlag name={value} className="h-3.5 w-5 shrink-0 rounded-sm" />
+                {value}
+              </span>
+            )}
+          </Select.Value>
+          <Select.Icon>
+            <ChevronIcon />
+          </Select.Icon>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Content position="popper" sideOffset={4} className="z-50 overflow-hidden rounded-lg border border-stone-200 bg-white shadow-luxe">
+            <Select.ScrollUpButton className="flex items-center justify-center py-1 text-stone-400">
+              <ChevronIcon direction="up" />
+            </Select.ScrollUpButton>
+            <Select.Viewport className="max-h-64 p-1" style={{ width: "var(--radix-select-trigger-width)" }}>
+              {options.map((option) => (
+                <Select.Item
+                  key={option}
+                  value={option}
+                  className="relative flex cursor-pointer select-none items-center rounded-md py-2 pl-3 pr-8 text-sm text-stone-700 outline-none transition data-[highlighted]:bg-brand-50 data-[highlighted]:text-brand-800"
+                >
+                  <span className="flex items-center gap-2">
+                    <CountryFlag name={option} className="h-3.5 w-5 shrink-0 rounded-sm" />
+                    <Select.ItemText>{option}</Select.ItemText>
+                  </span>
+                  <Select.ItemIndicator className="absolute right-3 flex items-center text-brand-600">
+                    <CheckIcon />
+                  </Select.ItemIndicator>
+                </Select.Item>
+              ))}
+            </Select.Viewport>
+            <Select.ScrollDownButton className="flex items-center justify-center py-1 text-stone-400">
+              <ChevronIcon direction="down" />
+            </Select.ScrollDownButton>
+          </Select.Content>
+        </Select.Portal>
+      </Select.Root>
       {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
-    </label>
+    </div>
   );
 }
 
-function EmptyCart() {
+// Looks up a flag by name via COUNTRY_CODES rather than shipping a React
+// component for every flag in the initial JavaScript bundle. An option with
+// no matching code renders no flag, keeping this safe if the field is ever
+// reused for a non-country list.
+function CountryFlag({ name, className }) {
+  const code = COUNTRY_CODES[name];
+  if (!code) return null;
+  const flag = String.fromCodePoint(...[...code].map((letter) => 127397 + letter.charCodeAt(0)));
+  return <span className={`${className} inline-flex items-center justify-center text-sm leading-none`} aria-hidden="true">{flag}</span>;
+}
+
+function ChevronIcon({ direction = "down" }) {
   return (
-    <div className="rounded-xl border border-dashed border-stone-300 bg-white px-6 py-20 text-center">
-      <h2 className="text-xl font-bold text-stone-900">Your basket is empty</h2>
-      <p className="mt-2 text-sm text-stone-500">Choose a product from the catalogue to begin.</p>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0">
+      <path d={direction === "up" ? "m18 15-6-6-6 6" : "m6 9 6 6 6-6"} />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+// Same "empty basket" message and styling either way — the only
+// difference is whether a "Recently viewed" section follows it, when
+// there's actually browsing history to show.
+function EmptyCart({ onSelectProduct, onNavigate }) {
+  const recentlyViewed = getRecentlyViewed();
+
+  return (
+    <div>
+      <div className={recentlyViewed.length > 0 ? "pb-10" : "py-16 text-center"}>
+        <h2 className="font-serif text-2xl font-medium text-stone-900">Your basket is empty</h2>
+        <p className="mt-2 text-sm text-stone-500">Choose a product from the catalogue to begin.</p>
+        <button
+          onClick={() => onNavigate("catalogue")}
+          className="mt-6 rounded-full bg-brand-600 px-6 py-2.5 text-sm font-semibold text-white shadow-luxe-sm transition hover:-translate-y-0.5 hover:bg-brand-700 active:translate-y-0"
+        >
+          Browse the catalogue
+        </button>
+      </div>
+      {recentlyViewed.length > 0 && (
+        <div>
+          <h3 className="font-serif text-2xl font-medium text-stone-900">Recently viewed</h3>
+          <div className="mt-6">
+            <ProductCarousel products={recentlyViewed} onSelectProduct={onSelectProduct} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

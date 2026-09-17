@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import ProductImage from "./ProductImage.jsx";
 import { formatPrice } from "../lib/currency.js";
 import { fetchStock } from "../api/inventory.js";
@@ -51,51 +52,61 @@ export default function ProductCard({ product, onSelect, onAddToCart, idToken })
   }
 
   return (
-    <article
+    <motion.article
       onClick={() => onSelect(product.id)}
       onKeyDown={handleKeyDown}
       role="button"
       tabIndex={0}
-      className="group flex cursor-pointer flex-col overflow-hidden rounded-xl border border-stone-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-400"
+      whileHover={{ y: -5 }}
+      transition={{ type: "spring", stiffness: 400, damping: 26 }}
+      className="group flex cursor-pointer flex-col overflow-hidden rounded-2xl bg-white text-left shadow-luxe-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
     >
-      <div className="relative">
-        <ProductImage src={product.image_url} alt={product.name} className="h-44 w-full object-cover" />
+      <motion.div
+        layoutId={`product-image-${product.id}`}
+        transition={{ layout: { type: "spring", stiffness: 300, damping: 32 } }}
+        className="relative overflow-hidden"
+      >
+        <ProductImage
+          src={product.image_url}
+          alt={product.name}
+          className="h-48 w-full object-cover transition duration-500 ease-out group-hover:scale-[1.04]"
+        />
         {outOfStock && (
-          <span className="absolute left-2 top-2 rounded-full bg-red-600 px-2 py-0.5 text-xs font-semibold text-white">
+          <span className="absolute left-3 top-3 rounded-full bg-persimmon-600 px-2.5 py-1 text-xs font-semibold text-white">
             Out of stock
           </span>
         )}
-      </div>
+      </motion.div>
 
       <div className="flex flex-1 flex-col gap-1.5 p-4">
         <span className="w-fit rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
           {product.category}
         </span>
-        <h3 className="font-semibold text-stone-800 transition group-hover:text-brand-700">
+        <h3 className="font-serif text-base font-semibold text-stone-900 transition group-hover:text-brand-700">
           {product.name}
         </h3>
         <p className="line-clamp-2 text-sm text-stone-500">
           {product.description}
         </p>
-        <div className="mt-auto flex items-end justify-between gap-2 pt-2">
+        <div className="mt-auto flex items-end justify-between gap-2 pt-3">
           <div>
-            <p className="text-lg font-semibold text-stone-900">
+            <p className="tabular-nums text-lg font-semibold text-stone-900">
               {formatPrice(product.price)}
             </p>
             {outOfStock && (
-              <p className="text-xs font-semibold text-red-600">Out of stock</p>
+              <p className="text-xs font-semibold text-persimmon-600">Out of stock</p>
             )}
           </div>
           <button
             onClick={handleAddToCart}
             onKeyDown={(event) => event.stopPropagation()}
             disabled={outOfStock}
-            className="rounded-md bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400"
+            className="rounded-full bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 active:scale-95 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 disabled:active:scale-100"
           >
             Add
           </button>
         </div>
       </div>
-    </article>
+    </motion.article>
   );
 }

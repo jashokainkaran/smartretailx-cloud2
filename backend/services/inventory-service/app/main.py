@@ -4,13 +4,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from mangum import Mangum
-from app.models import InventoryItem
+from app.models import InventoryItem, StockBatchRequest, StockOperation
 from app import events, repository
 from fastapi.middleware.cors import CORSMiddleware
 from app import config
 from app.auth import require_admin
 from app.correlation import correlation_id_from_request, correlation_middleware
-from app.models import StockOperation
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +65,15 @@ def low_stock(
     (see repository.list_low_stock()'s own docstring for the "something
     smarter" alternatives considered and not built)."""
     return repository.list_low_stock(threshold)
+
+
+@app.post("/api/v1/inventory/admin/batch", response_model=list[InventoryItem])
+def get_stock_batch(
+    request: StockBatchRequest,
+    _claims: dict = Depends(require_admin),
+):
+    """Return current stock for many admin-catalogue rows in one request."""
+    return repository.get_stock_batch(request.product_ids)
 
 
 @app.post("/api/v1/inventory/{product_id}/reserve")

@@ -1,23 +1,30 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { useAuth } from "./auth/AuthProvider.jsx";
 import Home from "./components/Home.jsx";
 import ProductGrid from "./components/ProductGrid.jsx";
 import ProductDetail from "./components/ProductDetail.jsx";
-import CartPage from "./components/CartPage.jsx";
-import OrdersPage from "./components/OrdersPage.jsx";
-import AdminPanel from "./components/AdminPanel.jsx";
-import CustomersOrdersPage from "./components/CustomersOrdersPage.jsx";
-import Dashboard from "./components/Dashboard.jsx";
 import CustomerNavbar from "./components/CustomerNavbar.jsx";
 import AdminNavbar from "./components/AdminNavbar.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
 import NotFound from "./components/NotFound.jsx";
 import Toast from "./components/Toast.jsx";
+import LoadingState from "./components/LoadingState.jsx";
 import { consumeReturnRoute } from "./lib/checkoutDraft.js";
 import { fetchProductById } from "./api/products.js";
 import { fetchCognitoProfile } from "./auth/cognitoUser.js";
-import CompleteProfilePage from "./components/CompleteProfilePage.jsx";
-import ProfilePage from "./components/ProfilePage.jsx";
+import FloatingCartButton from "./components/FloatingCartButton.jsx";
+
+// Account, checkout and administrator areas are loaded only when visited.
+// This keeps their form/dialog/QR-code dependencies out of the storefront's
+// first JavaScript download without changing any route behaviour.
+const CartPage = lazy(() => import("./components/CartPage.jsx"));
+const OrdersPage = lazy(() => import("./components/OrdersPage.jsx"));
+const AdminPanel = lazy(() => import("./components/AdminPanel.jsx"));
+const CustomersOrdersPage = lazy(() => import("./components/CustomersOrdersPage.jsx"));
+const Dashboard = lazy(() => import("./components/Dashboard.jsx"));
+const CompleteProfilePage = lazy(() => import("./components/CompleteProfilePage.jsx"));
+const ProfilePage = lazy(() => import("./components/ProfilePage.jsx"));
 
 const CART_KEY = "smartretailx.cart";
 const KNOWN_ROUTES = ["home", "catalogue", "cart", "orders", "admin", "dashboard", "customers", "profile", "complete-profile"];
@@ -62,6 +69,8 @@ export default function App() {
   });
   const [latestOrder, setLatestOrder] = useState(null);
   const [toast, setToast] = useState(null);
+  const [scrolled, setScrolled] = useState(false);
+  const [cartButtonArmed, setCartButtonArmed] = useState(false);
   const [profile, setProfile] = useState(null);
   const [profileStatus, setProfileStatus] = useState("idle");
   const [profileError, setProfileError] = useState(null);
@@ -86,6 +95,13 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(CART_KEY, JSON.stringify(cart));
   }, [cart]);
+
+  useEffect(() => {
+    function onScroll() { setScrolled(window.scrollY > 24); }
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     const page = selectedProductId ? "Product" : PAGE_TITLES[route] || "";
@@ -189,6 +205,11 @@ export default function App() {
     setToast(blocked
       ? { message: `Only ${availableQuantity} of ${product.name} in stock — you already have that many in your basket.`, variant: "error", key: Date.now() }
       : { message: `${product.name} added to cart`, key: Date.now() });
+    // The floating basket shortcut (mobile only) only ever appears as a
+    // reaction to actually adding something in THIS visit — not just
+    // because the basket happens to be non-empty from a previous visit,
+    // which would make it feel like an unprompted nag on page load.
+    if (!blocked) setCartButtonArmed(true);
   }
 
   function setQuantity(productId, rawQuantity) {
@@ -213,129 +234,184 @@ export default function App() {
     }));
   }
 
+  const pageKey = selectedProductId ? `product-${selectedProductId}` : route;
+  const cartItemCount = cart.reduce((total, item) => total + item.quantity, 0);
+  const showFloatingCart = cartButtonArmed && !isAdmin && route !== "cart" && route !== "complete-profile" && cartItemCount > 0;
+
   return (
-    <div className="min-h-screen bg-stone-50">
-      <Toast message={toast?.message} variant={toast?.variant} key={toast?.key} />
-      <header className="sticky top-0 z-10 border-b border-stone-200 bg-white/90 backdrop-blur relative">
-        <div className="mx-auto max-w-7xl px-6 py-4">
+    <div className="min-h-screen bg-cream text-stone-900">
+      <a
+        href="#main-content"
+        className="fixed left-4 top-4 z-40 -translate-y-24 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-white transition focus:translate-y-0"
+      >
+        Skip to content
+      </a>
+      <Toast message={toast?.message} variant={toast?.variant} toastKey={toast?.key} />
+      <header
+        className={`sticky top-0 z-10 relative border-b border-brand-900/10 bg-cream/85 backdrop-blur-md transition-shadow duration-300 ${scrolled ? "shadow-luxe-sm" : ""}`}
+      >
+        <div className={`mx-auto max-w-7xl px-6 transition-[padding] duration-300 ${scrolled ? "py-2.5" : "py-4"}`}>
           <div className="flex items-center justify-between gap-4">
             <button
               onClick={() => { setSelectedProductId(null); navigate(isAdmin ? "dashboard" : "home"); }}
               className="text-left"
             >
-              <h1 className="text-xl font-bold tracking-tight text-stone-900">
-                SmartRetail<span className="text-brand-600">X</span>
+              <h1 className={`font-serif font-semibold tracking-tight text-stone-900 transition-all duration-300 ${scrolled ? "text-xl" : "text-2xl"}`}>
+                SmartRetail<span className="italic text-brand-600">X</span>
               </h1>
-              {isAdmin && <p className="text-sm text-stone-500">Administrator</p>}
+              {isAdmin && <p className="text-xs font-medium uppercase tracking-[0.15em] text-stone-500">Administrator</p>}
             </button>
 
             {route === "complete-profile" ? null : isAdmin ? (
-              <AdminNavbar route={route} navigate={navigate} />
+              <AdminNavbar route={route} navigate={navigate} user={user} signOut={signOut} />
             ) : (
-              <CustomerNavbar route={route} cart={cart} user={user} navigate={navigate} />
+              <CustomerNavbar
+                route={route}
+                cart={cart}
+                user={user}
+                navigate={navigate}
+                signOut={signOut}
+                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+              />
             )}
 
-            {status === "loading" ? (
-              <span className="text-sm text-stone-500">Checking sign-in…</span>
-            ) : user ? (
-              <div className="flex items-center gap-3 text-right">
-                <div className="hidden sm:block">
-                  <p className="text-sm font-medium text-stone-900">{user.email}</p>
-                  <p className="text-xs text-stone-500">
-                    {isAdmin ? "Administrator" : "Customer"}
-                  </p>
+            {/* On mobile, a signed-in/out user's account actions live inside
+                the drawer instead (CustomerNavbar / AdminNavbar) — this
+                block would otherwise compete with the hamburger for the
+                same corner. */}
+            <div className="hidden md:block">
+              {status === "loading" ? (
+                <span className="text-sm text-stone-500">Checking sign-in…</span>
+              ) : user ? (
+                <div className="flex items-center gap-3 text-right">
+                  <div className="hidden sm:block">
+                    <p className="text-sm font-medium text-stone-900">{user.email}</p>
+                    <p className="text-xs text-stone-500">
+                      {isAdmin ? "Administrator" : "Customer"}
+                    </p>
+                  </div>
+                  <button
+                    onClick={signOut}
+                    className="rounded-full border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 transition hover:border-stone-400 hover:bg-white"
+                  >
+                    Sign out
+                  </button>
                 </div>
+              ) : (
                 <button
-                  onClick={signOut}
-                  className="rounded-md border border-stone-300 px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
+                  onClick={() => signIn().catch((signInError) => window.alert(signInError.message))}
+                  className="rounded-full bg-brand-600 px-5 py-2 text-sm font-semibold text-white shadow-luxe-sm transition hover:-translate-y-0.5 hover:bg-brand-700 active:translate-y-0"
                 >
-                  Sign out
+                  Sign in
                 </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => signIn().catch((signInError) => window.alert(signInError.message))}
-                className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-              >
-                Sign in
-              </button>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-6 py-10">
+      <main id="main-content" className="mx-auto max-w-7xl px-6 py-10 sm:py-12">
         {error && (
-          <div className="mb-6 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert">
+          <div className="mb-6 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert">
             {error}
           </div>
         )}
         {profileError && user && (
-          <div className="mb-6 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+          <div className="mb-6 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
             Could not load your account profile: {profileError}
           </div>
         )}
-        {selectedProductId ? (
-          <ProductDetail
-            productId={selectedProductId}
-            onBack={() => setSelectedProductId(null)}
-            onAddToCart={addToCart}
-            idToken={idToken}
-          />
-        ) : route === "home" ? (
-          <Home
-            user={user}
-            profile={profile}
-            onNavigate={navigate}
-            onSelectProduct={setSelectedProductId}
-            onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
-          />
-        ) : route === "catalogue" ? (
-          <ProductGrid onSelectProduct={setSelectedProductId} onAddToCart={addToCart} idToken={idToken} />
-        ) : route === "cart" ? (
-          <CartPage
-            cart={cart}
-            setQuantity={setQuantity}
-            removeItem={(id) => setCart((current) => current.filter((item) => item.id !== id))}
-            clearCart={() => setCart([])}
-            idToken={idToken}
-            user={user}
-            profile={profile}
-            onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
-            onOrderCreated={(order) => {
-              setLatestOrder(order);
-              setToast({ message: "Order placed!", variant: "success", key: Date.now() });
-              navigate("orders");
-            }}
-            onRefreshPrices={refreshCartPrices}
-          />
-        ) : route === "orders" && user ? (
-          <OrdersPage idToken={idToken} latestOrder={latestOrder} />
-        ) : route === "complete-profile" && user && profileStatus === "ready" ? (
-          <CompleteProfilePage
-            accessToken={accessToken}
-            profile={profile}
-            onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "home"); }}
-          />
-        ) : route === "profile" && user && profileStatus === "ready" ? (
-          <ProfilePage
-            accessToken={accessToken}
-            profile={profile}
-            onProfileUpdated={setProfile}
-            onSignOut={signOut}
-          />
-        ) : route === "dashboard" && isAdmin ? (
-          <Dashboard idToken={idToken} onNavigate={navigate} />
-        ) : route === "admin" && isAdmin ? (
-          <AdminPanel idToken={idToken} />
-        ) : route === "customers" && isAdmin ? (
-          <CustomersOrdersPage idToken={idToken} />
-        ) : route === "notfound" ? (
-          <NotFound onGoHome={() => navigate("home")} />
-        ) : (
-          <AccessDenied onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))} />
-        )}
+        {/* No mode="wait" here: the catalogue↔product-detail transition
+            relies on the outgoing card and incoming hero sharing a
+            layoutId (see ProductCard/ProductDetail's product-image-*), and
+            that shared-layout crossfade only works while both are briefly
+            mounted together — "wait" mode fully unmounts the exiting page
+            first, which would remove that overlap entirely. */}
+        <Suspense fallback={<LoadingState label="Loading page…" />}>
+          <AnimatePresence>
+            <motion.div
+              key={pageKey}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
+            >
+            {selectedProductId ? (
+              <ProductDetail
+                productId={selectedProductId}
+                onBack={() => setSelectedProductId(null)}
+                onAddToCart={addToCart}
+                idToken={idToken}
+              />
+            ) : route === "home" ? (
+              <Home
+                user={user}
+                profile={profile}
+                onNavigate={navigate}
+                onSelectProduct={setSelectedProductId}
+                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+              />
+            ) : route === "catalogue" ? (
+              <ProductGrid onSelectProduct={setSelectedProductId} onAddToCart={addToCart} idToken={idToken} />
+            ) : route === "cart" ? (
+              <CartPage
+                cart={cart}
+                setQuantity={setQuantity}
+                removeItem={(id) => setCart((current) => current.filter((item) => item.id !== id))}
+                clearCart={() => setCart([])}
+                idToken={idToken}
+                user={user}
+                profile={profile}
+                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+                onOrderCreated={(order) => {
+                  setLatestOrder(order);
+                  setToast({ message: "Order placed!", variant: "success", key: Date.now() });
+                  navigate("orders");
+                }}
+                onRefreshPrices={refreshCartPrices}
+                onSelectProduct={setSelectedProductId}
+                onNavigate={navigate}
+              />
+            ) : route === "orders" && user ? (
+              <OrdersPage idToken={idToken} latestOrder={latestOrder} onNavigate={navigate} />
+            ) : route === "complete-profile" && user && profileStatus === "ready" ? (
+              <CompleteProfilePage
+                accessToken={accessToken}
+                profile={profile}
+                onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "home"); }}
+              />
+            ) : route === "profile" && user && profileStatus === "ready" ? (
+              <ProfilePage
+                accessToken={accessToken}
+                profile={profile}
+                onProfileUpdated={setProfile}
+                onSignOut={signOut}
+              />
+            ) : route === "dashboard" && isAdmin ? (
+              <Dashboard idToken={idToken} onNavigate={navigate} />
+            ) : route === "admin" && isAdmin ? (
+              <AdminPanel idToken={idToken} />
+            ) : route === "customers" && isAdmin ? (
+              <CustomersOrdersPage idToken={idToken} />
+            ) : route === "notfound" ? (
+              <NotFound onGoHome={() => navigate("home")} />
+            ) : (
+              <AccessDenied
+                user={user}
+                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+                onGoHome={() => navigate("home")}
+              />
+            )}
+            </motion.div>
+          </AnimatePresence>
+        </Suspense>
       </main>
+
+      <AnimatePresence>
+        {showFloatingCart && (
+          <FloatingCartButton itemCount={cartItemCount} onClick={() => navigate("cart")} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

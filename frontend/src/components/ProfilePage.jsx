@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import QRCode from "qrcode";
 import {
   beginTotpSetup,
@@ -11,8 +13,30 @@ import {
   verifyTotpSetup,
 } from "../auth/cognitoUser.js";
 import { validateEmail, validateRequired } from "../lib/validation.js";
+import SuccessNotice from "./SuccessNotice.jsx";
 
 const MIN_PASSWORD_LENGTH = 8;
+
+// Replaces an instant show/hide with a real open/close motion — every
+// expanding section on this page (edit form, MFA setup, delete
+// confirmation) shares this one animation instead of just snapping.
+function Expand({ show, children }) {
+  return (
+    <AnimatePresence initial={false}>
+      {show && (
+        <motion.div
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.3, ease: "easeInOut" }}
+          className="overflow-hidden"
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 export default function ProfilePage({ accessToken, profile, onProfileUpdated, onSignOut }) {
   const [editing, setEditing] = useState(false);
@@ -220,57 +244,103 @@ export default function ProfilePage({ accessToken, profile, onProfileUpdated, on
   return (
     <section className="mx-auto max-w-3xl">
       <p className="text-sm font-semibold text-brand-700">Your account</p>
-      <h2 className="mt-1 text-3xl font-bold tracking-tight text-stone-900">My Profile</h2>
+      <h2 className="mt-1 font-serif text-3xl font-medium tracking-tight text-stone-900">My Profile</h2>
       <p className="mt-2 text-sm text-stone-600">Manage your personal details and account security in one place.</p>
 
       <div className="mt-7 space-y-6">
-        <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
+        <section className="rounded-2xl bg-white p-5 shadow-luxe-sm sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h3 className="text-lg font-bold text-stone-900">Personal details</h3><p className="mt-1 text-sm text-stone-500">Used to personalise your checkout form.</p></div>
-            <button type="button" onClick={() => { setEditing((current) => !current); setDetailsError(null); }} className="rounded-md border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-50">
+            <div><h3 className="font-serif text-lg font-semibold text-stone-900">Personal details</h3><p className="mt-1 text-sm text-stone-500">Used to personalise your checkout form.</p></div>
+            <button type="button" onClick={() => { setEditing((current) => !current); setDetailsError(null); }} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50">
               {editing ? "Cancel editing" : "Edit profile"}
             </button>
           </div>
 
-          {editing ? (
+          <Expand show={!editing}>
+            <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-3"><ProfileValue label="First name" value={profile?.givenName} /><ProfileValue label="Last name" value={profile?.familyName} /><ProfileValue label="Email" value={profile?.email} /></dl>
+          </Expand>
+          <Expand show={editing}>
             <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={saveDetails} noValidate>
               <ProfileField label="First name" value={details.givenName} onChange={(value) => setDetails((current) => ({ ...current, givenName: value }))} autoComplete="given-name" />
               <ProfileField label="Last name" value={details.familyName} onChange={(value) => setDetails((current) => ({ ...current, familyName: value }))} autoComplete="family-name" />
               <div className="sm:col-span-2"><ProfileField label="Email address" type="email" value={details.email} onChange={(value) => setDetails((current) => ({ ...current, email: value }))} autoComplete="email" /></div>
               {detailsError && <p className="sm:col-span-2 rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{detailsError}</p>}
-              <div className="sm:col-span-2"><button disabled={savingDetails} className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{savingDetails ? "Saving…" : "Save changes"}</button></div>
+              <div className="sm:col-span-2"><button disabled={savingDetails} className="rounded-full bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">{savingDetails ? "Saving…" : "Save changes"}</button></div>
             </form>
-          ) : (
-            <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-3"><ProfileValue label="First name" value={profile?.givenName} /><ProfileValue label="Last name" value={profile?.familyName} /><ProfileValue label="Email" value={profile?.email} /></dl>
-          )}
+          </Expand>
 
-          {detailsNotice && <p className="mt-5 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800" role="status">{detailsNotice}</p>}
-          {pendingEmail && (
+          {detailsNotice && <SuccessNotice className="mt-5">{detailsNotice}</SuccessNotice>}
+          <Expand show={Boolean(pendingEmail)}>
             <form className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4" onSubmit={confirmEmail} noValidate>
               <p className="text-sm font-semibold text-amber-900">Verify {pendingEmail}</p>
               <p className="mt-1 text-xs text-amber-800">Enter the six-digit code sent to your new address.</p>
-              <div className="mt-3 flex flex-wrap gap-3"><input value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" aria-label="Email verification code" className="w-44 rounded-md border border-amber-300 bg-white px-3 py-2" /><button disabled={savingDetails} className="rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-60">Verify email</button></div>
+              <div className="mt-3 flex flex-wrap gap-3"><input value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" aria-label="Email verification code" className="w-44 rounded-lg border border-amber-300 bg-white px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-amber-200" /><button disabled={savingDetails} className="rounded-full bg-amber-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-800 disabled:opacity-60">Verify email</button></div>
             </form>
-          )}
+          </Expand>
         </section>
 
-        <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-bold text-stone-900">Password</h3><p className="mt-1 text-sm text-stone-500">Use a new, unique password you do not reuse elsewhere.</p></div><button type="button" onClick={() => { setPasswordOpen((current) => !current); setPasswordError(null); }} className="rounded-md border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700 hover:bg-stone-50">{passwordOpen ? "Cancel" : "Change password"}</button></div>
-          {passwordNotice && <p className="mt-5 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800" role="status">{passwordNotice}</p>}
-          {passwordOpen && <form className="mt-5 max-w-md space-y-4" onSubmit={savePassword} noValidate><PasswordField label="Current password" value={passwords.current} onChange={(value) => setPasswords((current) => ({ ...current, current: value }))} autoComplete="current-password" /><PasswordField label="New password" value={passwords.next} onChange={(value) => setPasswords((current) => ({ ...current, next: value }))} autoComplete="new-password" /><PasswordField label="Confirm new password" value={passwords.confirm} onChange={(value) => setPasswords((current) => ({ ...current, confirm: value }))} autoComplete="new-password" />{passwordError && <p className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{passwordError}</p>}<button disabled={savingPassword} className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{savingPassword ? "Changing…" : "Save new password"}</button></form>}
+        <section className="rounded-2xl bg-white p-5 shadow-luxe-sm sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-serif text-lg font-semibold text-stone-900">Password</h3><p className="mt-1 text-sm text-stone-500">Use a new, unique password you do not reuse elsewhere.</p></div><button type="button" onClick={() => { setPasswordOpen((current) => !current); setPasswordError(null); }} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50">{passwordOpen ? "Cancel" : "Change password"}</button></div>
+          {passwordNotice && <SuccessNotice className="mt-5">{passwordNotice}</SuccessNotice>}
+          <Expand show={passwordOpen}><form className="mt-5 max-w-md space-y-4" onSubmit={savePassword} noValidate><PasswordField label="Current password" value={passwords.current} onChange={(value) => setPasswords((current) => ({ ...current, current: value }))} autoComplete="current-password" /><PasswordField label="New password" value={passwords.next} onChange={(value) => setPasswords((current) => ({ ...current, next: value }))} autoComplete="new-password" /><PasswordField label="Confirm new password" value={passwords.confirm} onChange={(value) => setPasswords((current) => ({ ...current, confirm: value }))} autoComplete="new-password" />{passwordError && <p className="rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{passwordError}</p>}<button disabled={savingPassword} className="rounded-full bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">{savingPassword ? "Changing…" : "Save new password"}</button></form></Expand>
         </section>
 
-        <section className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-bold text-stone-900">Multi-factor authentication</h3><p className="mt-1 text-sm text-stone-500">Protect your account with a six-digit code from an authenticator app.</p></div><span className={`rounded-full px-3 py-1 text-xs font-semibold ${mfaEnabled ? "bg-emerald-100 text-emerald-800" : "bg-stone-100 text-stone-700"}`}>{mfaEnabled ? "Enabled" : "Not enabled"}</span></div>
-          {mfaNotice && <p className="mt-5 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800" role="status">{mfaNotice}</p>}
+        <section className="rounded-2xl bg-white p-5 shadow-luxe-sm sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-serif text-lg font-semibold text-stone-900">Multi-factor authentication</h3><p className="mt-1 text-sm text-stone-500">Protect your account with a six-digit code from an authenticator app.</p></div><span className={`rounded-full px-3 py-1 text-xs font-semibold ${mfaEnabled ? "bg-emerald-100 text-emerald-800" : "bg-stone-100 text-stone-700"}`}>{mfaEnabled ? "Enabled" : "Not enabled"}</span></div>
+          {mfaNotice && <SuccessNotice className="mt-5">{mfaNotice}</SuccessNotice>}
           {mfaError && <p className="mt-5 rounded-md bg-red-50 p-3 text-sm text-red-700" role="alert">{mfaError}</p>}
-          {!mfaEnabled && !totpSecret && <button type="button" onClick={startTotpSetup} disabled={mfaBusy} className="mt-5 rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{mfaBusy ? "Preparing…" : "Set up authenticator app"}</button>}
-          {totpSecret && <form className="mt-5 rounded-lg border border-brand-200 bg-brand-50 p-4" onSubmit={completeTotpSetup} noValidate><h4 className="font-semibold text-stone-900">Scan the QR code</h4><p className="mt-1 text-sm text-stone-600">Open Google Authenticator, Microsoft Authenticator, Authy, or a compatible app and scan this code. Then enter its current six-digit code.</p>{totpQrUrl && <img src={totpQrUrl} alt="QR code to set up SmartRetailX authenticator MFA" className="mt-4 h-[220px] w-[220px] rounded bg-white p-2" />}<details className="mt-3 text-xs text-stone-600"><summary className="cursor-pointer font-medium">Can’t scan the code?</summary><p className="mt-2 break-all">Manual setup key: <code>{totpSecret}</code></p></details><div className="mt-4 flex flex-wrap gap-3"><input value={totpCode} onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" aria-label="Authenticator code" placeholder="Six-digit code" className="w-44 rounded-md border border-stone-300 px-3 py-2" /><button disabled={mfaBusy} className="rounded-md bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{mfaBusy ? "Verifying…" : "Verify and enable"}</button></div></form>}
-          {mfaEnabled && !confirmDisableMfa && <button type="button" onClick={() => setConfirmDisableMfa(true)} className="mt-5 rounded-md border border-red-300 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50">Disable MFA</button>}
-          {mfaEnabled && confirmDisableMfa && <div className="mt-5 rounded-lg border border-red-200 bg-red-50 p-4"><p className="text-sm text-red-800">Disabling MFA makes this account less secure. Are you sure?</p><div className="mt-3 flex gap-3"><button type="button" disabled={mfaBusy} onClick={disableTotp} className="rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-60">{mfaBusy ? "Disabling…" : "Yes, disable MFA"}</button><button type="button" onClick={() => setConfirmDisableMfa(false)} className="rounded-md border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700">Cancel</button></div></div>}
+          {!mfaEnabled && !totpSecret && <button type="button" onClick={startTotpSetup} disabled={mfaBusy} className="mt-5 rounded-full bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">{mfaBusy ? "Preparing…" : "Set up authenticator app"}</button>}
+          <Expand show={Boolean(totpSecret)}><form className="mt-5 rounded-lg border border-brand-200 bg-brand-50 p-4" onSubmit={completeTotpSetup} noValidate><h4 className="font-semibold text-stone-900">Scan the QR code</h4><p className="mt-1 text-sm text-stone-600">Open Google Authenticator, Microsoft Authenticator, Authy, or a compatible app and scan this code. Then enter its current six-digit code.</p>{totpQrUrl && <img src={totpQrUrl} alt="QR code to set up SmartRetailX authenticator MFA" className="mt-4 h-[220px] w-[220px] rounded-xl bg-white p-2 shadow-luxe-sm" />}<details className="mt-3 text-xs text-stone-600"><summary className="cursor-pointer font-medium">Can’t scan the code?</summary><p className="mt-2 break-all">Manual setup key: <code>{totpSecret}</code></p></details><div className="mt-4 flex flex-wrap gap-3"><input value={totpCode} onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" aria-label="Authenticator code" placeholder="Six-digit code" className="w-44 rounded-lg border border-stone-300 px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-200" /><button disabled={mfaBusy} className="rounded-full bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">{mfaBusy ? "Verifying…" : "Verify and enable"}</button></div></form></Expand>
+          {mfaEnabled && !confirmDisableMfa && <button type="button" onClick={() => setConfirmDisableMfa(true)} className="mt-5 rounded-full border border-red-300 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50">Disable MFA</button>}
+          {mfaEnabled && <Expand show={confirmDisableMfa}><div className="mt-5 rounded-lg border border-red-200 bg-red-50 p-4"><p className="text-sm text-red-800">Disabling MFA makes this account less secure. Are you sure?</p><div className="mt-3 flex gap-3"><button type="button" disabled={mfaBusy} onClick={disableTotp} className="rounded-full bg-red-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60">{mfaBusy ? "Disabling…" : "Yes, disable MFA"}</button><button type="button" onClick={() => setConfirmDisableMfa(false)} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50">Cancel</button></div></div></Expand>}
         </section>
 
-        <section className="rounded-xl border border-red-200 bg-white p-5 shadow-sm sm:p-6"><h3 className="text-lg font-bold text-red-800">Delete account</h3><p className="mt-1 text-sm text-stone-600">This deletes your Cognito sign-in account. It does not delete completed order records, which must be retained for operational and financial reasons.</p>{!deleteOpen ? <button type="button" onClick={() => setDeleteOpen(true)} className="mt-5 rounded-md border border-red-300 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50">Delete my account</button> : <form className="mt-5 rounded-lg bg-red-50 p-4" onSubmit={removeAccount}><label className="block text-sm font-semibold text-red-900">Type <code>DELETE</code> to confirm<input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} className="mt-2 block w-full rounded-md border border-red-300 bg-white px-3 py-2 text-stone-900" /></label>{deleteError && <p className="mt-3 text-sm text-red-800" role="alert">{deleteError}</p>}<div className="mt-4 flex gap-3"><button disabled={deleting} className="rounded-md bg-red-700 px-3 py-2 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-60">{deleting ? "Deleting…" : "Permanently delete account"}</button><button type="button" onClick={() => { setDeleteOpen(false); setDeleteConfirmation(""); setDeleteError(null); }} className="rounded-md border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700">Cancel</button></div></form>}</section>
+        <section className="rounded-2xl border border-red-200 bg-white p-5 shadow-luxe-sm sm:p-6">
+          <h3 className="font-serif text-lg font-semibold text-red-800">Delete account</h3>
+          <p className="mt-1 text-sm text-stone-600">This deletes your Cognito sign-in account. It does not delete completed order records, which must be retained for operational and financial reasons.</p>
+          {/* AlertDialog rather than an inline expanding section, on
+              purpose: this is the one irreversible action on the page, and
+              it deserves to interrupt you — force an explicit choice — the
+              way changing your name or password doesn't. It won't close on
+              a stray click outside it, only Cancel, Escape, or submitting. */}
+          <AlertDialog.Root open={deleteOpen} onOpenChange={setDeleteOpen}>
+            <AlertDialog.Trigger asChild>
+              <button type="button" className="mt-5 rounded-full border border-red-300 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50">
+                Delete my account
+              </button>
+            </AlertDialog.Trigger>
+            <AlertDialog.Portal>
+              <AlertDialog.Overlay className="fixed inset-0 z-30 bg-plum/60 backdrop-blur-sm" />
+              <AlertDialog.Content className="fixed left-1/2 top-1/2 z-40 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-white p-6 shadow-luxe focus:outline-none">
+                <AlertDialog.Title className="font-serif text-lg font-semibold text-red-800">Delete your account?</AlertDialog.Title>
+                <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+                  This permanently deletes your sign-in account and cannot be undone. Completed order records are kept regardless, for operational and financial reasons.
+                </AlertDialog.Description>
+                <form className="mt-4" onSubmit={removeAccount}>
+                  <label className="block text-sm font-semibold text-red-900">
+                    Type <code>DELETE</code> to confirm
+                    <input
+                      value={deleteConfirmation}
+                      onChange={(event) => setDeleteConfirmation(event.target.value)}
+                      className="mt-2 block w-full rounded-lg border border-red-300 bg-white px-3 py-2 text-stone-900 transition focus:outline-none focus:ring-2 focus:ring-red-200"
+                    />
+                  </label>
+                  {deleteError && <p className="mt-3 text-sm text-red-800" role="alert">{deleteError}</p>}
+                  <div className="mt-4 flex gap-3">
+                    <button disabled={deleting} className="rounded-full bg-red-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60">
+                      {deleting ? "Deleting…" : "Permanently delete account"}
+                    </button>
+                    <AlertDialog.Cancel asChild>
+                      <button type="button" onClick={() => { setDeleteConfirmation(""); setDeleteError(null); }} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50">
+                        Cancel
+                      </button>
+                    </AlertDialog.Cancel>
+                  </div>
+                </form>
+              </AlertDialog.Content>
+            </AlertDialog.Portal>
+          </AlertDialog.Root>
+        </section>
       </div>
     </section>
   );
@@ -281,5 +351,5 @@ function detailsFrom(profile) {
 }
 
 function ProfileValue({ label, value }) { return <div><dt className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</dt><dd className="mt-1 break-words font-medium text-stone-900">{value || "—"}</dd></div>; }
-function ProfileField({ label, value, onChange, type = "text", autoComplete }) { return <label className="block text-sm font-semibold text-stone-800">{label}<input type={type} value={value} onChange={(event) => onChange(event.target.value)} autoComplete={autoComplete} className="mt-1.5 w-full rounded-md border border-stone-300 px-3 py-2 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200" /></label>; }
-function PasswordField({ label, value, onChange, autoComplete }) { return <label className="block text-sm font-semibold text-stone-800">{label}<input type="password" value={value} onChange={(event) => onChange(event.target.value)} autoComplete={autoComplete} className="mt-1.5 w-full rounded-md border border-stone-300 px-3 py-2 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200" /></label>; }
+function ProfileField({ label, value, onChange, type = "text", autoComplete }) { return <label className="block text-sm font-semibold text-stone-800">{label}<input type={type} value={value} onChange={(event) => onChange(event.target.value)} autoComplete={autoComplete} className="mt-1.5 w-full rounded-lg border border-stone-300 px-3 py-2 transition focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200" /></label>; }
+function PasswordField({ label, value, onChange, autoComplete }) { return <label className="block text-sm font-semibold text-stone-800">{label}<input type="password" value={value} onChange={(event) => onChange(event.target.value)} autoComplete={autoComplete} className="mt-1.5 w-full rounded-lg border border-stone-300 px-3 py-2 transition focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200" /></label>; }

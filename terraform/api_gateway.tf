@@ -118,6 +118,7 @@ locals {
     inventory_release_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/release" }
     inventory_confirm_item = { service = "inventory", route_key = "POST /api/v1/inventory/{product_id}/confirm" }
     inventory_low_stock    = { service = "inventory", route_key = "GET /api/v1/inventory/admin/low-stock" }
+    inventory_batch_get    = { service = "inventory", route_key = "POST /api/v1/inventory/admin/batch" }
 
     order_create          = { service = "order", route_key = "POST /api/v1/orders" }
     order_list            = { service = "order", route_key = "GET /api/v1/orders" }

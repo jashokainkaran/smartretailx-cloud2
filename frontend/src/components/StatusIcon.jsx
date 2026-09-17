@@ -23,6 +23,13 @@ const PATHS = {
       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
     </>
   ),
+  forbidden: (
+    <>
+      <path d="M12 3 4 6.5v5c0 4.5 3.2 7.5 8 9 4.8-1.5 8-4.5 8-9v-5L12 3Z" />
+      <path d="m9.5 9.5 5 5" />
+      <path d="m14.5 9.5-5 5" />
+    </>
+  ),
   compass: (
     <>
       <circle cx="12" cy="12" r="9" />

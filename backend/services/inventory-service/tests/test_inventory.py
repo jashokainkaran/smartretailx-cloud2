@@ -73,6 +73,27 @@ def test_get_stock_missing_returns_404():
     assert response.status_code == 404
 
 
+def test_get_stock_batch_returns_existing_products_in_requested_order():
+    response = client.post("/api/v1/inventory/admin/batch", json={
+        "product_ids": ["p2", "does-not-exist", "p1", "p2"],
+    })
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"product_id": "p2", "available_quantity": 5, "reserved_quantity": 0},
+        {"product_id": "p1", "available_quantity": 100, "reserved_quantity": 0},
+    ]
+
+
+def test_get_stock_batch_rejects_empty_or_blank_product_ids():
+    assert client.post(
+        "/api/v1/inventory/admin/batch", json={"product_ids": []}
+    ).status_code == 422
+    assert client.post(
+        "/api/v1/inventory/admin/batch", json={"product_ids": ["p1", "  "]}
+    ).status_code == 422
+
+
 def test_reserve_reduces_available_and_raises_reserved():
     response = client.post("/api/v1/inventory/p1/reserve?quantity=30")
     assert response.status_code == 200

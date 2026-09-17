@@ -25,22 +25,59 @@ export function validateCard(card) {
   };
 }
 
+// Formats as you type — "4242424242424242" becomes "4242 4242 4242 4242" —
+// rather than requiring the space be typed. validateCardNumber already
+// strips whitespace before checking, so this is purely cosmetic and never
+// fights validation.
+function formatCardNumber(rawValue) {
+  const digits = rawValue.replace(/\D/g, "").slice(0, 19);
+  return (digits.match(/.{1,4}/g) || []).join(" ");
+}
+
+// "1228" becomes "12/28" as it's typed. validateExpiry already tolerates
+// optional whitespace around the slash, so this only ever adds the
+// separator, never something the validator would reject.
+function formatExpiry(rawValue) {
+  const digits = rawValue.replace(/\D/g, "").slice(0, 4);
+  return digits.length <= 2 ? digits : `${digits.slice(0, 2)}/${digits.slice(2)}`;
+}
+
+// Prefix-based, not a full Luhn/BIN check — this only ever decides which
+// small icon to show next to the field, not whether the number is valid,
+// so a purely visual heuristic is all it needs to be.
+function detectCardType(digits) {
+  if (digits.startsWith("4")) return "visa";
+  const firstTwo = Number(digits.slice(0, 2));
+  const firstFour = Number(digits.slice(0, 4));
+  if (firstTwo >= 51 && firstTwo <= 55) return "mastercard";
+  if (firstFour >= 2221 && firstFour <= 2720) return "mastercard";
+  return null;
+}
+
 export default function CardFields({ card, onChange, errors, touched, onBlur }) {
   const update = (field, value) => onChange({ ...card, [field]: value });
+  const cardType = detectCardType(card.number.replace(/\D/g, ""));
 
   return (
-    <div className="grid gap-3 rounded-lg border border-stone-200 bg-stone-50 p-4">
+    <div className="grid gap-3 rounded-xl border border-brand-900/10 bg-cream-100 p-4">
       <label className="text-sm font-medium text-stone-700">
         Card number
-        <input
-          value={card.number}
-          onChange={(event) => update("number", event.target.value)}
-          onBlur={() => onBlur("number")}
-          placeholder="4242 4242 4242 4242"
-          inputMode="numeric"
-          autoComplete="cc-number"
-          className={inputClass(touched.number && errors.number)}
-        />
+        <div className="relative">
+          <input
+            value={card.number}
+            onChange={(event) => update("number", formatCardNumber(event.target.value))}
+            onBlur={() => onBlur("number")}
+            placeholder="4242 4242 4242 4242"
+            inputMode="numeric"
+            autoComplete="cc-number"
+            className={`${inputClass(touched.number && errors.number)} pr-12`}
+          />
+          {cardType && (
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2">
+              {cardType === "visa" ? <VisaMark /> : <MastercardMark />}
+            </span>
+          )}
+        </div>
         <FieldError show={touched.number} message={errors.number} />
       </label>
 
@@ -49,9 +86,10 @@ export default function CardFields({ card, onChange, errors, touched, onBlur }) 
           Expiry (MM/YY)
           <input
             value={card.expiry}
-            onChange={(event) => update("expiry", event.target.value)}
+            onChange={(event) => update("expiry", formatExpiry(event.target.value))}
             onBlur={() => onBlur("expiry")}
             placeholder="12/28"
+            inputMode="numeric"
             autoComplete="cc-exp"
             className={inputClass(touched.expiry && errors.expiry)}
           />
@@ -61,7 +99,7 @@ export default function CardFields({ card, onChange, errors, touched, onBlur }) 
           CVV
           <input
             value={card.cvv}
-            onChange={(event) => update("cvv", event.target.value)}
+            onChange={(event) => update("cvv", event.target.value.replace(/\D/g, "").slice(0, 4))}
             onBlur={() => onBlur("cvv")}
             placeholder="123"
             inputMode="numeric"
@@ -81,8 +119,28 @@ export default function CardFields({ card, onChange, errors, touched, onBlur }) 
   );
 }
 
+// Simplified marks, not a reproduction of either brand's actual logo —
+// enough to read as "this is a Visa/Mastercard number" at a glance in a
+// small input-field icon, same spirit as any checkout form's card-type hint.
+function VisaMark() {
+  return (
+    <span className="flex h-5 w-8 items-center justify-center rounded bg-[#1434CB] text-[9px] font-bold italic tracking-tight text-white">
+      VISA
+    </span>
+  );
+}
+
+function MastercardMark() {
+  return (
+    <span className="relative flex h-5 w-8 items-center justify-center" aria-hidden="true">
+      <span className="absolute left-1.5 h-4 w-4 rounded-full bg-[#EB001B]" />
+      <span className="absolute right-1.5 h-4 w-4 rounded-full bg-[#F79E1B] mix-blend-multiply" />
+    </span>
+  );
+}
+
 function inputClass(hasError) {
-  return `mt-1 w-full rounded-md border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-400 ${hasError ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`;
+  return `mt-1 w-full rounded-lg border bg-white px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-brand-200 ${hasError ? "border-red-400" : "border-stone-300 focus:border-brand-400"}`;
 }
 
 function FieldError({ show, message }) {

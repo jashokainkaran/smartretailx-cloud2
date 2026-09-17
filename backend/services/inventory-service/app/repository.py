@@ -1,6 +1,9 @@
-import boto3
+import time
 from decimal import Decimal
+
+import boto3
 from botocore.exceptions import ClientError
+
 from app import config
 
 
@@ -44,6 +47,37 @@ def get_stock(product_id: str):
     """Fetch the stock record for a product. Returns None if it doesn't exist."""
     response = table.get_item(Key={"product_id": product_id})
     return response.get("Item")
+
+
+def get_stock_batch(product_ids: list[str]):
+    """Fetch up to 100 stock records with one DynamoDB batch operation.
+
+    DynamoDB does not preserve request order and rejects duplicate keys, so
+    ids are de-duplicated before the request and the response is put back in
+    first-seen order. Missing inventory records are omitted, matching
+    get_stock()'s ``None`` result for one missing product.
+    """
+    unique_ids = list(dict.fromkeys(product_ids))
+    request_items = {
+        config.INVENTORY_TABLE: {
+            "Keys": [{"product_id": product_id} for product_id in unique_ids],
+        }
+    }
+    items = []
+
+    for attempt in range(5):
+        response = dynamodb.batch_get_item(RequestItems=request_items)
+        items.extend(response.get("Responses", {}).get(config.INVENTORY_TABLE, []))
+        request_items = response.get("UnprocessedKeys", {})
+        if not request_items:
+            break
+        time.sleep(0.05 * (2 ** attempt))
+
+    if request_items:
+        raise RuntimeError("DynamoDB did not process all batch stock keys")
+
+    items_by_id = {item["product_id"]: item for item in items}
+    return [items_by_id[product_id] for product_id in unique_ids if product_id in items_by_id]
 
 
 def list_low_stock(threshold: int):

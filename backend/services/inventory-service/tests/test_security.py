@@ -47,13 +47,13 @@ def test_table():
     table.wait_until_not_exists()
 
 
-def lambda_event(method, path, claims=None, query=""):
+def lambda_event(method, path, claims=None, query="", body=None):
     event = {
         "version": "2.0",
         "routeKey": f"{method} {path}",
         "rawPath": path,
         "rawQueryString": query,
-        "headers": {},
+        "headers": {"content-type": "application/json"} if body is not None else {},
         "requestContext": {
             "accountId": "194680606132",
             "apiId": "test-api",
@@ -73,6 +73,8 @@ def lambda_event(method, path, claims=None, query=""):
         },
         "isBase64Encoded": False,
     }
+    if body is not None:
+        event["body"] = json.dumps(body)
     if claims is not None:
         event["requestContext"]["authorizer"] = {"jwt": {"claims": claims}}
     return event
@@ -104,3 +106,19 @@ def test_admin_single_group_bracket_string_is_accepted_end_to_end(monkeypatch):
         lambda_event("POST", "/api/v1/inventory/p1/add", claims=claims, query="quantity=5"), {}
     )
     assert response["statusCode"] == 200
+
+
+def test_customer_cannot_use_admin_stock_batch(monkeypatch):
+    monkeypatch.setattr(config, "AUTH_TEST_MODE", False)
+    claims = {"sub": "cust-1", "cognito:groups": "[customers]"}
+    response = handler(
+        lambda_event(
+            "POST",
+            "/api/v1/inventory/admin/batch",
+            claims=claims,
+            body={"product_ids": ["p1"]},
+        ),
+        {},
+    )
+    assert response["statusCode"] == 403
+    assert detail_of(response) == "Administrator access is required"

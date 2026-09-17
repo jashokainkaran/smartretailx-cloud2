@@ -221,6 +221,7 @@ resource "aws_iam_role_policy" "inventory_api" {
         Action = [
           "dynamodb:DescribeTable",
           "dynamodb:GetItem",
+          "dynamodb:BatchGetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:TransactWriteItems",

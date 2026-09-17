@@ -109,6 +109,49 @@
         }
       }
     },
+    "/api/v1/inventory/admin/batch": {
+      "post": {
+        "summary": "Get Stock Batch",
+        "description": "Return current stock for many admin-catalogue rows in one request.",
+        "operationId": "get_stock_batch_api_v1_inventory_admin_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InventoryItem"
+                  },
+                  "type": "array",
+                  "title": "Response Get Stock Batch Api V1 Inventory Admin Batch Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/inventory/{product_id}/reserve": {
       "post": {
         "summary": "Reserve Stock",
@@ -455,6 +498,25 @@
           "available_quantity"
         ],
         "title": "InventoryItem"
+      },
+      "StockBatchRequest": {
+        "properties": {
+          "product_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Product Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "product_ids"
+        ],
+        "title": "StockBatchRequest",
+        "description": "Product ids whose current stock levels should be returned together."
       },
       "StockOperation": {
         "properties": {

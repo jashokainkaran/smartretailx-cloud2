@@ -4,6 +4,15 @@ export function fetchStock(productId, idToken) {
   return request(`/api/v1/inventory/${encodeURIComponent(productId)}`, { idToken });
 }
 
+export function fetchStockBatch(productIds, idToken) {
+  if (productIds.length === 0) return Promise.resolve([]);
+  return request("/api/v1/inventory/admin/batch", {
+    method: "POST",
+    body: { product_ids: productIds },
+    idToken,
+  });
+}
+
 export function addStock(productId, quantity, idToken) {
   return request(`/api/v1/inventory/${encodeURIComponent(productId)}/add?quantity=${encodeURIComponent(quantity)}`, {
     method: "POST", idToken,
