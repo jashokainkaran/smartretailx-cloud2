@@ -1,30 +1,25 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useEffect, useState } from "react";
+import { AnimatePresence } from "framer-motion";
 import { useAuth } from "./auth/AuthProvider.jsx";
 import Home from "./components/Home.jsx";
 import ProductGrid from "./components/ProductGrid.jsx";
 import ProductDetail from "./components/ProductDetail.jsx";
+import CartPage from "./components/CartPage.jsx";
+import OrdersPage from "./components/OrdersPage.jsx";
+import AdminPanel from "./components/AdminPanel.jsx";
+import CustomersOrdersPage from "./components/CustomersOrdersPage.jsx";
+import Dashboard from "./components/Dashboard.jsx";
 import CustomerNavbar from "./components/CustomerNavbar.jsx";
 import AdminNavbar from "./components/AdminNavbar.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
 import NotFound from "./components/NotFound.jsx";
 import Toast from "./components/Toast.jsx";
-import LoadingState from "./components/LoadingState.jsx";
 import { consumeReturnRoute } from "./lib/checkoutDraft.js";
 import { fetchProductById } from "./api/products.js";
 import { fetchCognitoProfile } from "./auth/cognitoUser.js";
 import FloatingCartButton from "./components/FloatingCartButton.jsx";
-
-// Account, checkout and administrator areas are loaded only when visited.
-// This keeps their form/dialog/QR-code dependencies out of the storefront's
-// first JavaScript download without changing any route behaviour.
-const CartPage = lazy(() => import("./components/CartPage.jsx"));
-const OrdersPage = lazy(() => import("./components/OrdersPage.jsx"));
-const AdminPanel = lazy(() => import("./components/AdminPanel.jsx"));
-const CustomersOrdersPage = lazy(() => import("./components/CustomersOrdersPage.jsx"));
-const Dashboard = lazy(() => import("./components/Dashboard.jsx"));
-const CompleteProfilePage = lazy(() => import("./components/CompleteProfilePage.jsx"));
-const ProfilePage = lazy(() => import("./components/ProfilePage.jsx"));
+import CompleteProfilePage from "./components/CompleteProfilePage.jsx";
+import ProfilePage from "./components/ProfilePage.jsx";
 
 const CART_KEY = "smartretailx.cart";
 const KNOWN_ROUTES = ["home", "catalogue", "cart", "orders", "admin", "dashboard", "customers", "profile", "complete-profile"];
@@ -234,7 +229,6 @@ export default function App() {
     }));
   }
 
-  const pageKey = selectedProductId ? `product-${selectedProductId}` : route;
   const cartItemCount = cart.reduce((total, item) => total + item.quantity, 0);
   const showFloatingCart = cartButtonArmed && !isAdmin && route !== "cart" && route !== "complete-profile" && cartItemCount > 0;
 
@@ -321,90 +315,72 @@ export default function App() {
             Could not load your account profile: {profileError}
           </div>
         )}
-        {/* No mode="wait" here: the catalogue↔product-detail transition
-            relies on the outgoing card and incoming hero sharing a
-            layoutId (see ProductCard/ProductDetail's product-image-*), and
-            that shared-layout crossfade only works while both are briefly
-            mounted together — "wait" mode fully unmounts the exiting page
-            first, which would remove that overlap entirely. */}
-        <Suspense fallback={<LoadingState label="Loading page…" />}>
-          <AnimatePresence>
-            <motion.div
-              key={pageKey}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.25, ease: "easeOut" }}
-            >
-            {selectedProductId ? (
-              <ProductDetail
-                productId={selectedProductId}
-                onBack={() => setSelectedProductId(null)}
-                onAddToCart={addToCart}
-                idToken={idToken}
-              />
-            ) : route === "home" ? (
-              <Home
-                user={user}
-                profile={profile}
-                onNavigate={navigate}
-                onSelectProduct={setSelectedProductId}
-                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
-              />
-            ) : route === "catalogue" ? (
-              <ProductGrid onSelectProduct={setSelectedProductId} onAddToCart={addToCart} idToken={idToken} />
-            ) : route === "cart" ? (
-              <CartPage
-                cart={cart}
-                setQuantity={setQuantity}
-                removeItem={(id) => setCart((current) => current.filter((item) => item.id !== id))}
-                clearCart={() => setCart([])}
-                idToken={idToken}
-                user={user}
-                profile={profile}
-                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
-                onOrderCreated={(order) => {
-                  setLatestOrder(order);
-                  setToast({ message: "Order placed!", variant: "success", key: Date.now() });
-                  navigate("orders");
-                }}
-                onRefreshPrices={refreshCartPrices}
-                onSelectProduct={setSelectedProductId}
-                onNavigate={navigate}
-              />
-            ) : route === "orders" && user ? (
-              <OrdersPage idToken={idToken} latestOrder={latestOrder} onNavigate={navigate} />
-            ) : route === "complete-profile" && user && profileStatus === "ready" ? (
-              <CompleteProfilePage
-                accessToken={accessToken}
-                profile={profile}
-                onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "home"); }}
-              />
-            ) : route === "profile" && user && profileStatus === "ready" ? (
-              <ProfilePage
-                accessToken={accessToken}
-                profile={profile}
-                onProfileUpdated={setProfile}
-                onSignOut={signOut}
-              />
-            ) : route === "dashboard" && isAdmin ? (
-              <Dashboard idToken={idToken} onNavigate={navigate} />
-            ) : route === "admin" && isAdmin ? (
-              <AdminPanel idToken={idToken} />
-            ) : route === "customers" && isAdmin ? (
-              <CustomersOrdersPage idToken={idToken} />
-            ) : route === "notfound" ? (
-              <NotFound onGoHome={() => navigate("home")} />
-            ) : (
-              <AccessDenied
-                user={user}
-                onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
-                onGoHome={() => navigate("home")}
-              />
-            )}
-            </motion.div>
-          </AnimatePresence>
-        </Suspense>
+        {selectedProductId ? (
+          <ProductDetail
+            productId={selectedProductId}
+            onBack={() => setSelectedProductId(null)}
+            onAddToCart={addToCart}
+            idToken={idToken}
+          />
+        ) : route === "home" ? (
+          <Home
+            user={user}
+            profile={profile}
+            onNavigate={navigate}
+            onSelectProduct={setSelectedProductId}
+            onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+          />
+        ) : route === "catalogue" ? (
+          <ProductGrid onSelectProduct={setSelectedProductId} onAddToCart={addToCart} idToken={idToken} />
+        ) : route === "cart" ? (
+          <CartPage
+            cart={cart}
+            setQuantity={setQuantity}
+            removeItem={(id) => setCart((current) => current.filter((item) => item.id !== id))}
+            clearCart={() => setCart([])}
+            idToken={idToken}
+            user={user}
+            profile={profile}
+            onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+            onOrderCreated={(order) => {
+              setLatestOrder(order);
+              setToast({ message: "Order placed!", variant: "success", key: Date.now() });
+              navigate("orders");
+            }}
+            onRefreshPrices={refreshCartPrices}
+            onSelectProduct={setSelectedProductId}
+            onNavigate={navigate}
+          />
+        ) : route === "orders" && user ? (
+          <OrdersPage idToken={idToken} latestOrder={latestOrder} onNavigate={navigate} />
+        ) : route === "complete-profile" && user && profileStatus === "ready" ? (
+          <CompleteProfilePage
+            accessToken={accessToken}
+            profile={profile}
+            onCompleted={(nextProfile) => { setProfile(nextProfile); navigate(isAdmin ? "dashboard" : "home"); }}
+          />
+        ) : route === "profile" && user && profileStatus === "ready" ? (
+          <ProfilePage
+            accessToken={accessToken}
+            profile={profile}
+            onProfileUpdated={setProfile}
+            onSignOut={signOut}
+          />
+        ) : route === "dashboard" && isAdmin ? (
+          <Dashboard idToken={idToken} onNavigate={navigate} />
+        ) : route === "admin" && isAdmin ? (
+          <AdminPanel idToken={idToken} />
+        ) : route === "customers" && isAdmin ? (
+          <CustomersOrdersPage idToken={idToken} />
+        ) : route === "notfound" ? (
+          <NotFound onGoHome={() => navigate("home")} />
+        ) : (
+          <AccessDenied
+            user={user}
+            onSignIn={() => signIn().catch((signInError) => window.alert(signInError.message))}
+            onGoHome={() => navigate("home")}
+          />
+        )}
       </main>
 
       <AnimatePresence>
